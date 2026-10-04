@@ -306,6 +306,140 @@ add "edit() commits without recording the tiles first" js/core/history.js \
   history.touch(surface, r);' \
   '  history.begin(label, null);' history
 
+# ---------------------------------------------------------------- curve.js
+add "the spline does not clamp a tangent that opposes its secant" js/core/curve.js \
+  '    if (a < 0) m[i] = 0;
+    if (b < 0) m[i + 1] = 0;' \
+  '    if (false) m[i] = 0;
+    if (false) m[i + 1] = 0;' adjust
+
+add "the Fritsch-Carlson radius is 9 instead of 3 (overshoot)" js/core/curve.js \
+  '    if (s > 9) {
+      const t = 3 / Math.sqrt(s);' \
+  '    if (s > 81) {
+      const t = 9 / Math.sqrt(s);' adjust
+
+add "a flat secant does not zero its tangents" js/core/curve.js \
+  '    if (d[i] === 0) { m[i] = 0; m[i + 1] = 0; continue; }' \
+  '    if (false) { m[i] = 0; m[i + 1] = 0; continue; }' adjust
+
+add "duplicate x values are not de-duplicated (divide by zero)" js/core/curve.js \
+  '    if (out.length && Math.abs(out[out.length - 1][0] - p[0]) < 1e-9) out[out.length - 1] = p;
+    else out.push(p);' \
+  '    out.push(p);' adjust
+
+add "sampleLut propagates NaN instead of clamping" js/core/curve.js \
+  '  if (!(x > 0)) return lut[0];                 // also catches NaN' \
+  '  if (x < 0) return lut[0];                 // also catches NaN' adjust
+
+# --------------------------------------------------------------- adjust.js
+add "selective colour does not divide the chroma by (1 - k)" js/core/adjust.js \
+  '    if (d > 1e-9) { c = (c - k0) / d; m = (m - k0) / d; y = (y - k0) / d; }' \
+  '    if (d > 1e-9) { c = c - k0; m = m - k0; y = y - k0; }' adjust
+
+add "an adjustment writes the alpha channel" js/core/adjust.js \
+  '    buf[p] = sampleLut(lutR, buf[p]);' \
+  '    buf[p + 3] = sampleLut(lutR, buf[p + 3]);
+    buf[p] = sampleLut(lutR, buf[p]);' adjust
+
+add "exposure applies its gain in encoded space, not linear" js/core/adjust.js \
+  '    let v = srgbToLinear(x) * gain + offset;' \
+  '    let v = srgbToLinear(x * gain + offset);' adjust
+
+add "brightness is an offset, so it clips the highlights" js/core/adjust.js \
+  '    let v = b >= 0 ? x + (1 - x) * b : x * (1 + b);' \
+  '    let v = x + b;' adjust
+
+add "posterize quantises with n steps instead of n-1" js/core/adjust.js \
+  '  const lut = buildLut((x) => round(x * (n - 1)) / (n - 1));' \
+  '  const lut = buildLut((x) => round(x * n) / n);' adjust
+
+add "levels divides by a zero span" js/core/adjust.js \
+  '    let v = span === 0 ? (x >= inWhite ? 1 : 0) : (x - inBlack) / span;' \
+  '    let v = (x - inBlack) / span;' adjust
+
+add "the master levels curve runs before the per-channel one" js/core/adjust.js \
+  '    return buildLut((x) => fm(fc(x)));' \
+  '    return buildLut((x) => fc(fm(x)));' adjust
+
+add "black and white ignores saturation, so greys follow a hue slider" js/core/adjust.js \
+  '    const v = clamp01(lerp(L, mx * mix, S));' \
+  '    const v = clamp01(mx * mix);' adjust
+
+add "the 3D LUT is indexed blue-fastest instead of red-fastest" js/core/adjust.js \
+  '  const at = (x, y, z, c) => lut[((x + y * size + z * size * size) * 3) + c];' \
+  '  const at = (x, y, z, c) => lut[((z + y * size + x * size * size) * 3) + c];' adjust
+
+add ".cube DOMAIN_MIN/MAX is ignored" js/core/adjust.js \
+  '    lut[i] = (vals[i] - domainMin[c]) / span;' \
+  '    lut[i] = vals[i];' adjust
+
+add "a truncated .cube file is accepted" js/core/adjust.js \
+  '  if (vals.length !== size * size * size * 3) {' \
+  '  if (false) {' adjust
+
+add "an adjustment layer ignores its opacity" js/core/composite.js \
+  '  const before = layer.opacity < 1 || (layer.mask && layer.maskEnabled) || layer.clipping
+    ? dst.slice()
+    : null;' \
+  '  const before = null;' adjust
+
+add "gradient stop midpoints are ignored" js/core/adjust.js \
+  '      f = Math.pow(f, Math.log(0.5) / Math.log(mid));' \
+  '      f = f;' adjust
+
+# -------------------------------------------------------------- convolve.js
+add "a blur filters straight colour, so a cut-out haloes" js/core/convolve.js \
+  '  premultiply(buf);
+  separable(buf, w, h, k, r, mode, true);
+  unpremultiply(buf);
+  return buf;
+}
+
+/** Box blur of radius r, as a true mean (not a gaussian approximation). */' \
+  '  separable(buf, w, h, k, r, mode, true);
+  return buf;
+}
+
+/** Box blur of radius r, as a true mean (not a gaussian approximation). */' convolve
+
+add "the gaussian kernel is not normalised" js/core/convolve.js \
+  '  for (let i = 0; i < k.length; i++) k[i] /= sum;' \
+  '  for (let i = 0; i < k.length; i++) k[i] /= 1;' convolve
+
+add "the gaussian radius truncates at 1 sigma" js/core/convolve.js \
+  'export const gaussianRadius = (sigma) => Math.max(1, Math.ceil(Math.max(1e-4, sigma) * 3));' \
+  'export const gaussianRadius = (sigma) => Math.max(1, Math.ceil(Math.max(1e-4, sigma) * 1));' convolve
+
+add "the reflect border repeats the edge sample (convolve copy)" js/core/convolve.js \
+  "    case 'reflect': return reflect;" \
+  "    case 'reflect': return (i, n) => { const p = 2 * n; const k = ((i % p) + p) % p; return k < n ? k : p - k - 1; };" convolve
+
+add "un-premultiplying a transparent pixel divides by zero" js/core/convolve.js \
+  '    if (a > 0) { buf[p] /= a; buf[p + 1] /= a; buf[p + 2] /= a; }
+    else { buf[p] = buf[p + 1] = buf[p + 2] = 0; }' \
+  '    buf[p] /= a; buf[p + 1] /= a; buf[p + 2] /= a;' convolve
+
+add "convolve flips the kernel (a convolution, not a correlation)" js/core/convolve.js \
+  '          const kv = kernel[ky * kw + kx];' \
+  '          const kv = kernel[(kh - 1 - ky) * kw + (kw - 1 - kx)];' convolve
+
+add "a colour convolution overwrites alpha" js/core/convolve.js \
+  '      buf[d + 3] = preserveAlpha ? src[d + 3] : a0 * inv + bias;' \
+  '      buf[d + 3] = a0 * inv + bias;' convolve
+
+add "the custom filter divisor falls back to 0 instead of the kernel sum" js/core/convolve.js \
+  '    divisor = s === 0 ? 1 : s;' \
+  '    divisor = 1;' convolve
+
+add "unsharp ignores its threshold" js/core/convolve.js \
+  '      if (Math.abs(d) >= threshold) buf[p + c] = buf[p + c] + amount * d;' \
+  '      buf[p + c] = buf[p + c] + amount * d;' convolve
+
+add "the rank filter picks the wrong order statistic" js/core/convolve.js \
+  '        const idx = clamp(Math.round(rank * (m - 1)), 0, m - 1);' \
+  '        const idx = clamp(Math.round(rank * m), 0, m - 1);' convolve
+
 # ---------------------------------------------------------------- runner
 
 BK=$(mktemp -d)
