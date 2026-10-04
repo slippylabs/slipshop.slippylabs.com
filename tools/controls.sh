@@ -440,6 +440,207 @@ add "the rank filter picks the wrong order statistic" js/core/convolve.js \
   '        const idx = clamp(Math.round(rank * (m - 1)), 0, m - 1);' \
   '        const idx = clamp(Math.round(rank * m), 0, m - 1);' convolve
 
+# -------------------------------------------------------------- resample.js
+add "the resize window is not clipped to the image" js/core/resample.js \
+  '    lo = Math.max(0, lo);
+    hi = Math.min(srcSize - 1, hi);' \
+  '    lo = lo;
+    hi = hi;' resample
+
+add "the tap weights are not renormalised" js/core/resample.js \
+  '    if (sum !== 0) for (let t = 0; t < n; t++) weights[base + t] /= sum;' \
+  '    if (sum !== 0) for (let t = 0; t < n; t++) weights[base + t] /= 1;' resample
+
+add "pixel centres are at the integer, not at +0.5" js/core/resample.js \
+  '    const centre = (i + 0.5) * scale - 0.5;' \
+  '    const centre = i * scale;' resample
+
+add "the filter support is not widened when downscaling (aliasing)" js/core/resample.js \
+  '  const fscale = Math.max(1, scale);' \
+  '  const fscale = 1;' resample
+
+add "bicubic uses a = -1 instead of Catmull-Rom's -0.5" js/core/resample.js \
+  '  const a = -0.5;
+  const t = Math.abs(x);' \
+  '  const a = -1;
+  const t = Math.abs(x);' resample
+
+add "lanczos is 2-lobe instead of 3" js/core/resample.js \
+  '  return sinc(t) * sinc(t / 3);' \
+  '  return sinc(t) * sinc(t / 2);' resample
+
+add "nearest rounds its tie the other way" js/core/resample.js \
+  '      lo = hi = clamp(Math.floor((i + 0.5) * scale), 0, srcSize - 1);' \
+  '      lo = hi = clamp(Math.ceil((i + 0.5) * scale), 0, srcSize - 1);' resample
+
+add "resize does not clamp its ringing before un-premultiplying" js/core/resample.js \
+  '    out[i] = clamp(out[i], 0, a);
+    out[i + 1] = clamp(out[i + 1], 0, a);' \
+  '    out[i] = out[i];
+    out[i + 1] = out[i + 1];' resample
+
+add "orient() transposes rot90 the wrong way" js/core/resample.js \
+  "        case 'rot90': put(h - 1 - y, x, sp); break;" \
+  "        case 'rot90': put(y, x, sp); break;" resample
+
+add "transformedBounds does not snap a near-integer corner" js/core/resample.js \
+  '  const snap = (v) => (Math.abs(v - Math.round(v)) < 1e-6 ? Math.round(v) : v);' \
+  '  const snap = (v) => v;' resample
+
+# -------------------------------------------------------------- distance.js
+add "the distance field is not corrected by half a pixel" js/core/distance.js \
+  '    out[i] = mask[i] >= threshold ? -(dIn[i] - 0.5) : (dOut[i] - 0.5);' \
+  '    out[i] = mask[i] >= threshold ? -dIn[i] : dOut[i];' paint
+
+add "the distance transform does only one of its two passes" js/core/distance.js \
+  '  // rows
+  for (let y = 0; y < h; y++) {
+    const row = y * w;' \
+  '  // rows
+  for (let y = 0; y < 0; y++) {
+    const row = y * w;' paint
+
+add "the lower envelope keeps the wrong parabola" js/core/distance.js \
+  '    while (s <= z[k]) {' \
+  '    while (false) {' paint
+
+# ---------------------------------------------------------------- select.js
+add "a new selection does not clear the old one outside its rect" js/core/select.js \
+  "  if (mode === 'new') {
+    sel.tiles.clear();" \
+  "  if (mode === 'new') {
+    ;" select_new
+
+add "subtract and intersect are swapped" js/core/select.js \
+  "    case 'subtract': return Math.min(existing, 1 - incoming);
+    case 'intersect': return Math.min(existing, incoming);" \
+  "    case 'subtract': return Math.min(existing, incoming);
+    case 'intersect': return Math.min(existing, 1 - incoming);" paint
+
+add "intersect does not clear outside the incoming shape" js/core/select.js \
+  '    const keep = sel.readRect(c);
+    sel.tiles.clear();' \
+  '    const keep = sel.readRect(c);
+    ;' paint
+
+add "the polygon scanline is closed on both ends (double-counted vertices)" js/core/select.js \
+  '        if ((sy >= ay && sy < by) || (sy >= by && sy < ay)) {' \
+  '        if ((sy >= ay && sy <= by) || (sy >= by && sy <= ay)) {' paint
+
+add "the polygon fill rule is even-odd instead of non-zero" js/core/select.js \
+  "        const insideSpan = evenOdd ? ((i % 2) === 0) : wind !== 0;" \
+  "        const insideSpan = (i % 2) === 0;" paint
+
+add "rectangle coverage is not antialiased" js/core/select.js \
+  '    return clamp01(Math.min(b, i + 1) - Math.max(a, i));' \
+  '    return (i + 0.5 >= a && i + 0.5 < b) ? 1 : 0;' paint
+
+add "the ellipse edge ramp ignores the gradient (stair-stepping)" js/core/select.js \
+  '      const dist = (1 - q) / grad;                  // signed pixels, + inside' \
+  '      const dist = (1 - q);                  // signed pixels, + inside' paint
+
+add "the magic wand recurses on pixels it has already queued" js/core/select.js \
+  '      if (seen[j]) return;
+      seen[j] = 1;' \
+  '      if (false) return;
+      seen[j] = 1;' wand_loop
+
+add "the wand coverage ramp has no antialiasing" js/core/select.js \
+  '    return antialias ? 1 - d / tolerance : 1;' \
+  '    return 1;' paint
+
+add "marching ants orients an edge with the selection on its LEFT" js/core/select.js \
+  '      if (!inside(x, y - 1)) add(x, y, x + 1, y);              // top, ->' \
+  '      if (!inside(x, y - 1)) add(x + 1, y, x, y);              // top, ->' paint
+
+add "marching ants takes the anticlockwise turn at a diagonal" js/core/select.js \
+  '          const cw = [-dy, dx];                    // clockwise with y down' \
+  '          const cw = [dy, -dx];                    // clockwise with y down' paint
+
+# -------------------------------------------------------------- gradient.js
+add "the gradient ramp is not interpolated between samples" js/core/gradient.js \
+  '        out[d + c] = lerp(ramp[i0 * 4 + c], ramp[i1 * 4 + c], ft);' \
+  '        out[d + c] = ramp[i0 * 4 + c];' paint
+
+add "a linear gradient divides by the length instead of its square" js/core/gradient.js \
+  '      return ((px - x0) * dx + (py - y0) * dy) / len2;
+    }
+  }
+}' \
+  '      return ((px - x0) * dx + (py - y0) * dy) / Math.sqrt(len2);
+    }
+  }
+}' paint
+
+add "the gradient dither is a whole step instead of a fraction" js/core/gradient.js \
+  "        t = clamp01(t + BAYER8[((r.y + y) & 7) * 8 + ((r.x + x) & 7)] / N);" \
+  "        t = clamp01(t + BAYER8[((r.y + y) & 7) * 8 + ((r.x + x) & 7)]);" paint
+
+add "a zero-length gradient drag divides by zero" js/core/gradient.js \
+  '      const len2 = dx * dx + dy * dy || 1e-12;
+      const t = ((px - x0) * dx + (py - y0) * dy) / len2;
+      return Math.abs(t);' \
+  '      const len2 = dx * dx + dy * dy;
+      const t = ((px - x0) * dx + (py - y0) * dy) / len2;
+      return Math.abs(t);' paint
+
+# ----------------------------------------------------------------- brush.js
+add "the stroke spacing resets per segment (blobs at a slow event rate)" js/core/brush.js \
+  '    this.leftover = dist - travelled;' \
+  '    this.leftover = 0;' paint
+
+add "stamps are laid by addition, so flow blows past 1" js/core/brush.js \
+  '        cur[i] = cur[i] + (1 - cur[i]) * c;' \
+  '        cur[i] = cur[i] + c;' paint
+
+add "stamps are laid by max, so flow does nothing on overlap" js/core/brush.js \
+  '        cur[i] = cur[i] + (1 - cur[i]) * c;' \
+  '        cur[i] = Math.max(cur[i], c);' paint
+
+add "the tip footprint ignores rotation and clips a flat brush" js/core/brush.js \
+  '  const hx = Math.sqrt((r * ca) ** 2 + (ry * sa) ** 2);
+  const hy = Math.sqrt((r * sa) ** 2 + (ry * ca) ** 2);' \
+  '  const hx = ry;
+  const hy = ry;' paint
+
+add "a hard tip gets no antialiasing at all" js/core/brush.js \
+  '        if (hard >= 1) cov = clamp01((1 - q) * r + 0.5);' \
+  '        if (hard >= 1) cov = q <= 1 ? 1 : 0;' paint
+
+add "the size dynamic ignores pressure" js/core/brush.js \
+  "    case 'pressure': t = clamp01(sample.pressure); break;" \
+  "    case 'pressure': t = 1; break;" paint
+
+add "applyStroke ignores the selection" js/core/brush.js \
+  '    if (sel) a *= sel[i];
+    if (a <= 0) continue;
+    const p = i * 4;
+    if (mode === '"'"'erase'"'"') {' \
+  '    if (a <= 0) continue;
+    const p = i * 4;
+    if (mode === '"'"'erase'"'"') {' paint
+
+# --------------------------------------------------------------- filters.js
+add "a filter is allowed to leave the 0..1 range" js/core/filters.js \
+  '    if (v >= 0 && v <= 1) continue;
+    buf[i] = v > 1 ? 1 : (v >= 0 ? v : 0);' \
+  '    continue;' paint
+
+add "add-noise draws from one stream in buffer order (not tileable)" js/core/filters.js \
+  '      const key = (Math.imul(x + ox, 0x27d4eb2d) ^ Math.imul(y + oy, 0x165667b1) ^ seed) >>> 0;
+      const rnd = mulberry32(key);' \
+  '      const rnd = mulberry32(seed);' paint
+
+add "the gaussian blur reports a radius of zero" js/core/filters.js \
+  '    radius: (p) => gaussianRadius(p.radius), apply: blurGaussian,' \
+  '    radius: () => 0, apply: blurGaussian,' paint
+
+add "mosaic averages straight colour, so a transparent block takes a hidden hue" js/core/filters.js \
+  '        const al = buf[q + 3];
+        r += buf[q] * al; g += buf[q + 1] * al; b += buf[q + 2] * al; a += al;' \
+  '        const al = buf[q + 3];
+        r += buf[q]; g += buf[q + 1]; b += buf[q + 2]; a += al;' paint
+
 # ---------------------------------------------------------------- runner
 
 BK=$(mktemp -d)

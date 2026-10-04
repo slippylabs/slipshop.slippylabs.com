@@ -144,7 +144,11 @@ export class Doc {
 /** A document with one opaque white layer, which is what File > New means. */
 export function newDoc(w, h, opts = {}) {
   const d = new Doc({ w, h, ...opts });
-  const bg = d.addLayer(new Layer({ type: 'raster', name: 'Background', locked: true }));
+  // NOT locked. Photoshop's Background is locked against moving and against
+  // transparency, not against painting, and a `locked` flag here blocks
+  // painting outright -- so a brand new document could not be drawn on at all.
+  // Found by the browser suite; no unit test could see it.
+  const bg = d.addLayer(new Layer({ type: 'raster', name: 'Background' }));
   bg.surface = d.newSurface(4);
   bg.surface.fill(opts.background || [1, 1, 1, 1]);
   return d;

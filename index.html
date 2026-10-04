@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>SlipShop Image Editor // slipshop.slippylabs.com</title>
+<meta name="description" content="A full image editor in your browser: layers with 27 blend modes, masks and clipping, selections, a pressure-sensitive brush engine, non-destructive adjustment layers, curves, filters and liquify. Nothing is uploaded — it all runs on your own machine.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://slipshop.slippylabs.com/">
+<meta property="og:title" content="SlipShop Image Editor // slipshop.slippylabs.com">
+<meta property="og:description" content="A full image editor in your browser: layers with 27 blend modes, masks and clipping, selections, a pressure-sensitive brush engine, non-destructive adjustment layers, curves, filters and liquify. Nothing is uploaded — it all runs on your own machine.">
+<meta property="og:image" content="https://slipshop.slippylabs.com/og-image.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="SlipShop Image Editor // slipshop.slippylabs.com">
+<meta name="twitter:description" content="A full image editor in your browser: layers with 27 blend modes, masks and clipping, selections, a pressure-sensitive brush engine, non-destructive adjustment layers, curves, filters and liquify. Nothing is uploaded — it all runs on your own machine.">
+<meta name="twitter:image" content="https://slipshop.slippylabs.com/og-image.png">
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2064%2064%22%3E%3Crect%20width%3D%2264%22%20height%3D%2264%22%20fill%3D%22%23050b10%22%2F%3E%3Ccircle%20cx%3D%2232%22%20cy%3D%2234%22%20r%3D%2220%22%20fill%3D%22%231c8a52%22%20stroke%3D%22%2339ff8f%22%20stroke-width%3D%223%22%2F%3E%3Cpath%20d%3D%22M20%2046L44%2022%22%20stroke%3D%22%2339ff8f%22%20stroke-width%3D%224%22%2F%3E%3C%2Fsvg%3E">
+<meta name="theme-color" content="#050b10">
+<link rel="stylesheet" href="style.css?v=6">
+</head>
+<body class="sp-app">
+
+<header class="sp-top">
+  <a class="sp-brand" href="https://projects.slippylabs.com/" title="Back to the Archive">
+    <span class="sp-brand-mark">&#128396;&#65039;</span><span class="sp-brand-name">SlipShop</span>
+  </a>
+
+  <nav class="sp-menu" id="menubar" aria-label="Main menu"></nav>
+
+  <span class="sp-sep"></span>
+  <button class="sp-btn sp-icon" id="btn-undo" title="Undo (Ctrl+Z)" aria-label="Undo">&#8630;</button>
+  <button class="sp-btn sp-icon" id="btn-redo" title="Redo (Ctrl+Shift+Z)" aria-label="Redo">&#8631;</button>
+
+  <span class="sp-spacer"></span>
+  <span class="sp-readout" id="doc-title">Untitled</span>
+  <span class="sp-sep"></span>
+  <button class="sp-btn sp-icon sp-dock-toggle" id="btn-dock" title="Panels" aria-label="Panels">&#9636;</button>
+  <a class="sp-btn" href="https://slippylabs.com/" title="Slippy Labs">Home</a>
+</header>
+
+<aside class="sp-rail" id="rail" aria-label="Tools"></aside>
+
+<main class="sp-stage" id="stage">
+  <div class="sp-canvas-wrap" id="canvas-wrap">
+    <canvas id="view" width="1" height="1"></canvas>
+    <canvas class="sp-overlay" id="overlay" width="1" height="1"></canvas>
+  </div>
+  <div class="sp-stage-hint" id="hint"></div>
+</main>
+
+<aside class="sp-dock" id="dock" aria-label="Panels"></aside>
+
+<footer class="sp-status">
+  <span class="sp-zoom">
+    <button class="sp-btn sp-icon" id="zoom-out" title="Zoom out" aria-label="Zoom out">&minus;</button>
+    <span class="sp-readout" id="zoom-label">100%</span>
+    <button class="sp-btn sp-icon" id="zoom-in" title="Zoom in" aria-label="Zoom in">+</button>
+    <button class="sp-btn" id="zoom-fit" title="Fit on screen (Ctrl+0)">Fit</button>
+  </span>
+  <span class="sp-sep"></span>
+  <span class="sp-readout" id="st-size">&mdash;</span>
+  <span class="sp-readout" id="st-pos">&mdash;</span>
+  <span class="sp-readout" id="st-pick"></span>
+  <span class="sp-spacer"></span>
+  <span class="sp-readout" id="st-mem"></span>
+  <span class="sp-readout sp-busy sp-hidden" id="st-busy">working&hellip;</span>
+</footer>
+
+<div class="sp-toast" id="toast" role="status" aria-live="polite"></div>
+<dialog class="sp-modal" id="modal">
+  <form method="dialog">
+    <div class="sp-modal-head" id="modal-head"></div>
+    <div class="sp-modal-body" id="modal-body"></div>
+    <div class="sp-modal-foot" id="modal-foot"></div>
+  </form>
+</dialog>
+
+<input type="file" id="file-open" accept="image/*,.slipshop" multiple hidden>
+
+<noscript>
+  <p style="padding:18px;color:#d9fbe8">SlipShop is an image editor, so it needs JavaScript. Nothing is uploaded either way — it all runs on your own machine.</p>
+</noscript>
+
+<script type="module" src="js/app/main.js?v=1"></script>
+
+<!-- Slippy Deck: floating Slippy TV + jukebox player. Renders nothing unless admin.slippylabs.com/whoami confirms a signed-in account. -->
+<script defer src="https://slippylabs.com/deck/deck.js"></script>
+<!-- Slippy Labs sitewide privacy link. The FIXED variant, as SlipStudio uses:
+     this page is a full-viewport app, not a centred .page-wrap, so the in-flow
+     bar with its 64px trim would push the status bar off the bottom. -->
+<div class="sl-legal"><a href="https://slippylabs.com/privacy.html">Privacy</a></div>
+<style>
+.sl-legal{box-sizing:border-box;position:fixed;right:6px;bottom:0;z-index:6;height:26px;display:flex;align-items:center;margin:0;padding:0;font-family:"Consolas","SFMono-Regular",Menlo,Monaco,"Courier New",monospace;font-size:10px;letter-spacing:.08em;text-transform:uppercase;opacity:.4;color:#d9fbe8;pointer-events:none}
+.sl-legal a{color:inherit;text-decoration:none;display:inline-flex;align-items:center;min-height:26px;padding:0 8px;pointer-events:auto}
+.sl-legal a:hover,.sl-legal a:focus-visible{text-decoration:underline;opacity:1}
+/* Local addition to the shared block, not a change to it: the fixed variant's
+   26px link is a real tap target and the phone audit rightly flags it. The
+   shared lines above are left byte-identical so a sitewide sweep still
+   matches them. */
+@media (max-width:560px){.sl-legal{height:44px}.sl-legal a{min-height:44px;padding:0 14px}}
+</style>
+</body>
+</html>

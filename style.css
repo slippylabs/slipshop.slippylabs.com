@@ -1378,3 +1378,658 @@ mark.regex-match { background: rgba(57, 255, 143, 0.3); color: var(--hud-green);
   .net-table th, .net-table td { padding: 6px 8px; }
 }
 
+
+/* ===========================================================================
+   SlipShop -- the editor shell.
+
+   Everything above this line is the shared Slippy Labs tool stylesheet, kept
+   for its colour tokens and its form components. The layout below is NOT the
+   centred .hud-panel the other tools use: an image editor needs the whole
+   viewport, so this is an app shell in the same shape as SlipStudio's --
+   topbar, tool rail, canvas, docks, status bar -- wearing the HUD palette.
+
+   Prefix: .sp-*  (the house convention; dither-studio uses .ds-, tilemap
+   -studio .tm-, and so on).
+   =========================================================================== */
+
+:root {
+  --sp-bar: #0a1a16;
+  --sp-dock: #081411;
+  --sp-line: rgba(57, 255, 143, 0.22);
+  --sp-line-2: rgba(57, 255, 143, 0.1);
+  --sp-hi: rgba(57, 255, 143, 0.14);
+  --sp-rail: 46px;
+  --sp-dock-w: 268px;
+  --sp-top: 40px;
+  --sp-status: 26px;
+  /* The checkerboard that means "transparent" everywhere in the app. */
+  --sp-checker-a: #2a2f2e;
+  --sp-checker-b: #1d2221;
+}
+
+/* The shell takes over the viewport: no page scroll, no centring. */
+body.sp-app {
+  margin: 0;
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+  background: var(--bg-deep);
+  display: grid;
+  grid-template-rows: var(--sp-top) 1fr var(--sp-status);
+  grid-template-columns: var(--sp-rail) 1fr var(--sp-dock-w);
+  grid-template-areas:
+    "top top top"
+    "rail stage dock"
+    "status status status";
+  font-size: 12px;
+}
+/* The HUD backdrop is decoration on a tool page and noise behind a canvas. */
+body.sp-app .starfield,
+body.sp-app .scanlines { display: none; }
+
+/* ---------------------------------------------------------------- topbar */
+.sp-top {
+  grid-area: top;
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  background: var(--sp-bar);
+  border-bottom: 1px solid var(--sp-line);
+  padding: 0 6px;
+  min-width: 0;
+}
+.sp-brand {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 10px 0 4px;
+  color: var(--hud-green);
+  text-decoration: none;
+  font-weight: bold;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+}
+.sp-brand-mark { font-size: 16px; }
+.sp-brand-name { font-size: 13px; }
+.sp-menu { display: flex; align-items: stretch; }
+.sp-sep { width: 1px; background: var(--sp-line-2); margin: 7px 5px; }
+.sp-spacer { flex: 1 1 auto; min-width: 0; }
+
+.sp-btn {
+  appearance: none;
+  background: transparent;
+  color: var(--text-main);
+  border: 1px solid transparent;
+  border-radius: 3px;
+  padding: 0 9px;
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+  touch-action: manipulation;
+}
+.sp-btn:hover:not(:disabled) { background: var(--sp-hi); border-color: var(--sp-line); }
+.sp-btn:disabled { opacity: 0.35; cursor: default; }
+.sp-btn.on { background: var(--sp-hi); border-color: var(--hud-green-dim); color: var(--hud-green); }
+.sp-btn.sp-icon { padding: 0; width: 28px; justify-content: center; font-size: 14px; }
+.sp-btn.sp-primary { background: var(--hud-green-dim); border-color: var(--hud-green); color: #04120b; font-weight: bold; }
+
+/* A menu is a button plus an absolutely positioned list. */
+.sp-drop { position: relative; display: flex; }
+.sp-drop-list {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 40;
+  min-width: 212px;
+  max-height: min(70vh, 540px);
+  overflow: auto;
+  background: #0b1f1a;
+  border: 1px solid var(--sp-line);
+  border-radius: 4px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6);
+  padding: 4px;
+  display: none;
+}
+.sp-drop.open .sp-drop-list { display: block; }
+.sp-drop-list button {
+  appearance: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  width: 100%;
+  background: transparent;
+  color: var(--text-main);
+  border: 0;
+  border-radius: 3px;
+  padding: 6px 8px;
+  font: inherit;
+  font-size: 11.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.sp-drop-list button:hover:not(:disabled) { background: var(--sp-hi); }
+.sp-drop-list button:disabled { opacity: 0.35; cursor: default; }
+.sp-drop-list hr { border: 0; border-top: 1px solid var(--sp-line-2); margin: 4px 2px; }
+.sp-key { color: var(--text-dim); font-size: 10.5px; letter-spacing: 0.04em; }
+.sp-drop-head {
+  padding: 5px 8px 3px;
+  color: var(--text-dim);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+/* ------------------------------------------------------------- tool rail */
+.sp-rail {
+  grid-area: rail;
+  background: var(--sp-dock);
+  border-right: 1px solid var(--sp-line);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 5px 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+.sp-tool {
+  appearance: none;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--text-main);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  touch-action: manipulation;
+}
+.sp-tool:hover { background: var(--sp-hi); }
+.sp-tool.on { background: var(--sp-hi); border-color: var(--hud-green); color: var(--hud-green); }
+.sp-rail-gap { height: 7px; flex: 0 0 auto; }
+
+/* ---------------------------------------------------------------- stage */
+.sp-stage {
+  grid-area: stage;
+  position: relative;
+  overflow: hidden;
+  background:
+    repeating-conic-gradient(var(--sp-checker-a) 0% 25%, var(--sp-checker-b) 0% 50%) 50% / 16px 16px;
+  min-width: 0;
+  min-height: 0;
+  touch-action: none;
+}
+/* The document canvas is positioned by script; the shadow is what separates
+   the artboard from the workspace behind it. */
+.sp-canvas-wrap {
+  position: absolute;
+  box-shadow: 0 0 0 1px rgba(57, 255, 143, 0.35), 0 8px 34px rgba(0, 0, 0, 0.65);
+  background:
+    repeating-conic-gradient(#fff 0% 25%, #cfcfcf 0% 50%) 50% / 12px 12px;
+}
+.sp-canvas-wrap canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  /* Nearest-neighbour above 100% so a pixel is a pixel when you zoom in. */
+  image-rendering: auto;
+}
+.sp-canvas-wrap.sp-pixelated canvas { image-rendering: pixelated; }
+/* The marching-ants overlay sits over the pixels and takes no input. */
+.sp-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.sp-stage-hint {
+  position: absolute;
+  left: 50%;
+  bottom: 14px;
+  transform: translateX(-50%);
+  background: rgba(5, 11, 16, 0.85);
+  border: 1px solid var(--sp-line);
+  border-radius: 4px;
+  padding: 5px 11px;
+  color: var(--text-dim);
+  pointer-events: none;
+  opacity: 0;
+  max-width: calc(100% - 24px);
+}
+.sp-stage-hint.show { opacity: 1; }
+
+/* ----------------------------------------------------------------- dock */
+.sp-dock {
+  grid-area: dock;
+  background: var(--sp-dock);
+  border-left: 1px solid var(--sp-line);
+  overflow-y: auto;
+  overflow-x: hidden;
+  min-width: 0;
+}
+.sp-panel { border-bottom: 1px solid var(--sp-line-2); }
+.sp-panel > summary {
+  cursor: pointer;
+  padding: 7px 10px;
+  color: var(--hud-green);
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+}
+.sp-panel > summary::-webkit-details-marker { display: none; }
+.sp-panel > summary::before {
+  content: "\25B8";
+  transition: transform 0.12s;
+  font-size: 9px;
+  opacity: 0.8;
+}
+.sp-panel[open] > summary::before { transform: rotate(90deg); }
+.sp-panel-body { padding: 2px 10px 11px; min-width: 0; }
+
+/* A label/control row. Single column under its own narrow breakpoint. */
+.sp-row {
+  display: grid;
+  grid-template-columns: 78px 1fr;
+  align-items: center;
+  gap: 6px;
+  margin: 5px 0;
+  min-width: 0;
+}
+.sp-row > label { color: var(--text-dim); font-size: 11px; }
+.sp-row.wide { grid-template-columns: 1fr; }
+.sp-ctl { display: flex; align-items: center; gap: 5px; min-width: 0; }
+.sp-ctl > input[type="range"] { flex: 1 1 auto; min-width: 0; accent-color: var(--hud-green); }
+.sp-num {
+  width: 52px;
+  flex: 0 0 auto;
+  background: #04100c;
+  border: 1px solid var(--sp-line);
+  border-radius: 3px;
+  color: var(--text-main);
+  font: inherit;
+  font-size: 11px;
+  padding: 3px 4px;
+  text-align: right;
+}
+.sp-select, .sp-text {
+  width: 100%;
+  min-width: 0;
+  background: #04100c;
+  border: 1px solid var(--sp-line);
+  border-radius: 3px;
+  color: var(--text-main);
+  font: inherit;
+  font-size: 11px;
+  padding: 3px 5px;
+}
+.sp-btn-row { display: flex; flex-wrap: wrap; gap: 5px; margin: 7px 0 2px; }
+.sp-btn-row > .sp-btn { flex: 1 1 auto; justify-content: center; border-color: var(--sp-line); min-height: 26px; }
+
+/* --------------------------------------------------------- layers panel */
+.sp-layers { display: flex; flex-direction: column; gap: 2px; margin: 4px 0 6px; }
+.sp-layer {
+  display: grid;
+  grid-template-columns: 22px 30px 1fr auto;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 4px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  cursor: pointer;
+  min-width: 0;
+}
+.sp-layer:hover { background: var(--sp-hi); }
+.sp-layer.sel { background: rgba(57, 255, 143, 0.17); border-color: var(--hud-green-dim); }
+.sp-layer.clipped { padding-left: 14px; }
+.sp-eye {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  color: var(--hud-green);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 2px;
+  line-height: 1;
+}
+.sp-eye.off { color: var(--text-dim); opacity: 0.45; }
+.sp-thumb {
+  width: 30px;
+  height: 24px;
+  border: 1px solid var(--sp-line-2);
+  background: repeating-conic-gradient(#fff 0% 25%, #cfcfcf 0% 50%) 50% / 6px 6px;
+  display: block;
+}
+.sp-layer-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  min-width: 0;
+}
+.sp-layer-meta { color: var(--text-dim); font-size: 10px; white-space: nowrap; }
+.sp-layer-kids { margin-left: 11px; border-left: 1px solid var(--sp-line-2); padding-left: 4px; }
+.sp-mask-chip {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border: 1px solid var(--hud-green-dim);
+  margin-left: 3px;
+  vertical-align: middle;
+}
+.sp-mask-chip.off { opacity: 0.3; }
+
+/* -------------------------------------------------------- history panel */
+.sp-history { display: flex; flex-direction: column; gap: 1px; max-height: 190px; overflow: auto; }
+.sp-hist {
+  padding: 3px 6px;
+  border-radius: 3px;
+  color: var(--text-dim);
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sp-hist.now { background: var(--sp-hi); color: var(--hud-green); }
+.sp-hist.future { opacity: 0.4; }
+
+/* ------------------------------------------------------- colour + swatches */
+.sp-colour-pair { position: relative; width: 56px; height: 44px; flex: 0 0 auto; }
+.sp-swatch-fg, .sp-swatch-bg {
+  position: absolute;
+  width: 32px;
+  height: 28px;
+  border: 1px solid var(--sp-line);
+  border-radius: 2px;
+  cursor: pointer;
+  padding: 0;
+  background-clip: padding-box;
+}
+.sp-swatch-fg { left: 0; top: 0; z-index: 2; }
+.sp-swatch-bg { right: 0; bottom: 0; }
+.sp-swap {
+  position: absolute;
+  right: -2px;
+  top: -2px;
+  z-index: 3;
+  background: transparent;
+  border: 0;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 10px;
+  padding: 1px;
+}
+.sp-sv { width: 100%; height: 92px; display: block; cursor: crosshair; border: 1px solid var(--sp-line-2); }
+.sp-hue { width: 100%; height: 14px; display: block; cursor: crosshair; border: 1px solid var(--sp-line-2); margin-top: 4px; }
+.sp-swatches { display: grid; grid-template-columns: repeat(10, 1fr); gap: 3px; margin-top: 7px; }
+.sp-swatches button {
+  aspect-ratio: 1;
+  border: 1px solid var(--sp-line-2);
+  border-radius: 2px;
+  cursor: pointer;
+  padding: 0;
+}
+
+/* --------------------------------------------------------------- status */
+.sp-status {
+  grid-area: status;
+  background: var(--sp-bar);
+  border-top: 1px solid var(--sp-line);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 10px;
+  color: var(--text-dim);
+  font-size: 11px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.sp-status b { color: var(--text-main); font-weight: normal; }
+.sp-zoom { display: flex; align-items: center; gap: 3px; }
+.sp-readout { font-variant-numeric: tabular-nums; }
+.sp-busy { color: var(--hud-orange); }
+
+/* ----------------------------------------------------------------- misc */
+.sp-hidden { display: none !important; }
+.sp-note { color: var(--text-dim); font-size: 10.5px; line-height: 1.45; margin: 4px 0 0; }
+.sp-note.bad { color: var(--hud-red); }
+.sp-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 44px;
+  transform: translateX(-50%);
+  z-index: 60;
+  background: #0b1f1a;
+  border: 1px solid var(--hud-green-dim);
+  border-radius: 4px;
+  padding: 8px 15px;
+  color: var(--text-main);
+  opacity: 0;
+  pointer-events: none;
+  max-width: calc(100vw - 28px);
+}
+.sp-toast.show { opacity: 1; }
+.sp-toast.bad { border-color: var(--hud-red); color: #ffd9dd; }
+
+.sp-modal {
+  border: 1px solid var(--sp-line);
+  border-radius: 5px;
+  background: #0b1f1a;
+  color: var(--text-main);
+  padding: 0;
+  max-width: min(560px, calc(100vw - 24px));
+  width: 100%;
+}
+.sp-modal::backdrop { background: rgba(2, 7, 5, 0.72); }
+.sp-modal-head {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--sp-line-2);
+  color: var(--hud-green);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-size: 11px;
+}
+.sp-modal-body { padding: 12px 14px; max-height: 70vh; overflow: auto; }
+.sp-modal-foot {
+  padding: 10px 14px;
+  border-top: 1px solid var(--sp-line-2);
+  display: flex;
+  justify-content: flex-end;
+  gap: 7px;
+}
+/* A curve/levels editor canvas. */
+.sp-graph {
+  width: 100%;
+  max-width: 260px;
+  aspect-ratio: 1;
+  display: block;
+  border: 1px solid var(--sp-line);
+  background: #04100c;
+  cursor: crosshair;
+  touch-action: none;
+}
+.sp-histogram {
+  width: 100%;
+  height: 56px;
+  display: block;
+  border: 1px solid var(--sp-line-2);
+  background: #04100c;
+}
+
+/* =====================================================================
+   Phone and tablet. An image editor cannot become one column, but the
+   docks can collapse to overlays so the canvas keeps the screen. Below
+   900px the dock slides over the stage instead of taking a third of it.
+   ===================================================================== */
+@media (max-width: 900px) {
+  body.sp-app {
+    grid-template-columns: var(--sp-rail) 1fr;
+    grid-template-areas:
+      "top top"
+      "rail stage"
+      "status status";
+  }
+  .sp-dock {
+    position: fixed;
+    top: var(--sp-top);
+    right: 0;
+    bottom: var(--sp-status);
+    width: min(300px, 86vw);
+    z-index: 30;
+    transform: translateX(101%);
+    transition: transform 0.16s ease;
+    box-shadow: -8px 0 26px rgba(0, 0, 0, 0.5);
+  }
+  .sp-dock.open { transform: none; }
+  .sp-dock-toggle { display: inline-flex !important; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sp-dock { transition: none; }
+}
+.sp-dock-toggle { display: none; }
+
+@media (max-width: 560px) {
+  /* The 44px rule. A tool rail of 34px squares is the one thing here that
+     cannot simply grow -- 20 tools at 44px is 880px of column -- so the rail
+     scrolls and only its buttons reach the minimum. */
+  :root { --sp-rail: 52px; --sp-top: 46px; --sp-status: 30px; }
+  .sp-tool { width: 44px; height: 44px; font-size: 17px; }
+  .sp-btn { min-height: 44px; padding: 0 11px; }
+  .sp-btn.sp-icon { width: 44px; }
+  .sp-drop-list button { min-height: 44px; }
+  .sp-eye { min-width: 32px; min-height: 32px; }
+  .sp-layer { grid-template-columns: 32px 34px 1fr auto; padding: 5px 4px; }
+  .sp-num { min-height: 34px; }
+  .sp-select, .sp-text { min-height: 44px; }
+  .sp-row { grid-template-columns: 1fr; }
+  .sp-row > label { font-size: 11.5px; }
+  input[type="range"] { height: 44px; }
+  .sp-swatches { grid-template-columns: repeat(8, 1fr); gap: 5px; }
+  .sp-swatches button { min-height: 30px; }
+  .sp-hist { min-height: 32px; display: flex; align-items: center; }
+}
+
+/* ===========================================================================
+   Phone fixes found by driving the real editor at 390px (tools/playable.py).
+   Measured, not guessed: the suite walks every visible control and reports
+   anything under 40px plus any horizontal overflow.
+   =========================================================================== */
+
+/* The topbar held a brand, seven menus, undo/redo, a title and two buttons in
+   a nowrap flex with no overflow, so it forced the grid column wider than the
+   viewport and pushed the whole page sideways by 307px. It SCROLLS instead --
+   a menu bar is the one thing that genuinely cannot wrap usefully -- and every
+   child is pinned against flex-shrink.
+
+   flex-shrink is the actual villain here and it is worth naming: the default
+   `flex: 0 1 auto` let a 28px icon button be squashed to 10px wide while
+   staying 45px tall, so it passed a height check and was unusable. Anything in
+   a flex row that must keep its size needs `flex: 0 0 auto`. */
+.sp-top {
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+.sp-top::-webkit-scrollbar { height: 0; }
+.sp-top > * { flex: 0 0 auto; }
+.sp-top > .sp-spacer { flex: 1 1 auto; min-width: 0; }
+.sp-rail > * { flex: 0 0 auto; }
+.sp-status > * { flex: 0 0 auto; }
+.sp-status > .sp-spacer { flex: 1 1 auto; min-width: 0; }
+.sp-btn-row > .sp-btn { flex: 1 1 auto; }
+
+@media (max-width: 560px) {
+  /* A panel header is a tap target. */
+  .sp-panel > summary { min-height: 44px; }
+
+  /* The overlapping foreground/background swatches cannot each reach 44px
+     while overlapping, so at phone width they stop overlapping: a plain row
+     of three real targets instead of a clever stack of three small ones.
+     Growing the hit areas in place would have made them cover each other. */
+  .sp-colour-pair {
+    position: static;
+    width: auto;
+    height: auto;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .sp-colour-pair .sp-swatch-fg,
+  .sp-colour-pair .sp-swatch-bg {
+    position: static;
+    width: 52px;
+    height: 44px;
+    flex: 0 0 auto;
+  }
+  .sp-colour-pair .sp-swap {
+    position: static;
+    width: 44px;
+    height: 44px;
+    flex: 0 0 auto;
+    font-size: 14px;
+  }
+
+  /* The saturation/value square and the hue strip are drag surfaces, not
+     buttons, but the hue strip at 14px is hard to hit with a thumb. */
+  .sp-hue { height: 28px; }
+  .sp-sv { height: 120px; }
+
+  /* The layer rows' eye and mask chips. */
+  .sp-mask-chip { width: 18px; height: 18px; }
+  .sp-thumb { width: 38px; height: 30px; }
+}
+
+@media (max-width: 560px) {
+  /* Twenty swatches at eight per row came out 31px square. Five per row fits
+     56px each inside a 390px screen, which clears the minimum with room for
+     the gaps -- the grid gets fewer columns rather than the buttons getting a
+     bigger invisible hit area, because these sit edge to edge and an inflated
+     target would overlap its neighbour. */
+  .sp-swatches { grid-template-columns: repeat(5, 1fr); gap: 6px; }
+  .sp-swatches button { min-height: 44px; min-width: 44px; }
+}
+
+@media (max-width: 560px) {
+  /* The number box next to every slider renders 34px from its own padding. */
+  .sp-num { min-height: 44px; }
+}
+
+@media (max-width: 560px) {
+  /* `.sp-btn-row > .sp-btn` sets min-height 26px and is MORE SPECIFIC than
+     `.sp-btn`, so the 44px rule above lost to it. Specificity, not order. */
+  .sp-btn-row > .sp-btn { min-height: 44px; }
+
+  /* The layer visibility toggle. */
+  .sp-eye { min-width: 44px; min-height: 44px; }
+
+  /* A checkbox is tapped via its wrapping label, so the LABEL is the target
+     and the box itself only has to be big enough to see. */
+  label.sp-ctl { min-height: 44px; }
+  label.sp-ctl input[type="checkbox"] { width: 22px; height: 22px; }
+
+  /* The colour input chip. */
+  .sp-row input[type="color"] { min-height: 44px; min-width: 52px; }
+}
+
+/* The sitewide privacy link is position:fixed at the bottom right, which puts
+   it straight on top of the status bar's right-hand readouts -- visible in the
+   first og-image capture as overlapping text. Give the bar room for it rather
+   than moving the shared block. */
+.sp-status { padding-right: 86px; }
+@media (max-width: 560px) {
+  .sp-status { padding-right: 78px; }
+}
