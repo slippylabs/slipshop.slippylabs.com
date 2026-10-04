@@ -12,7 +12,7 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
-TESTS="util color blend"
+TESTS="util color blend tiles doc composite history"
 fail=0
 for t in $TESTS; do
   printf '%-10s ' "$t"

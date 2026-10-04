@@ -123,6 +123,189 @@ add "round() is half-to-even instead of half-up" js/core/util.js \
   'export const round = (v) => Math.floor(v + 0.5);' \
   'export const round = (v) => { const f = Math.floor(v), d = v - f; return d > 0.5 || (d === 0.5 && (f & 1)) ? f + 1 : f; };' util
 
+# ---------------------------------------------------------------- tiles.js
+add "readRect ignores the document edge inside an edge tile" js/core/tiles.js \
+  '        const ix1 = Math.min(r.x + r.w, ox + TILE, this.w);
+        const iy1 = Math.min(r.y + r.h, oy + TILE, this.h);
+        for (let y = iy0; y < iy1; y++) {
+          let s = ((y - oy) * TILE + (ix0 - ox)) * C;' \
+  '        const ix1 = Math.min(r.x + r.w, ox + TILE);
+        const iy1 = Math.min(r.y + r.h, oy + TILE);
+        for (let y = iy0; y < iy1; y++) {
+          let s = ((y - oy) * TILE + (ix0 - ox)) * C;' tiles
+
+add "readRect stops one pixel short of each tile edge (a seam every 256px)" js/core/tiles.js \
+  '        const ix1 = Math.min(r.x + r.w, ox + TILE, this.w);
+        const iy1 = Math.min(r.y + r.h, oy + TILE, this.h);
+        for (let y = iy0; y < iy1; y++) {
+          let s = ((y - oy) * TILE + (ix0 - ox)) * C;' \
+  '        const ix1 = Math.min(r.x + r.w, ox + TILE - 1, this.w);
+        const iy1 = Math.min(r.y + r.h, oy + TILE, this.h);
+        for (let y = iy0; y < iy1; y++) {
+          let s = ((y - oy) * TILE + (ix0 - ox)) * C;' tiles
+
+add "tileIndex is transposed (row-major vs column-major)" js/core/tiles.js \
+  '  tileIndex(tx, ty) { return ty * this.tx + tx; }' \
+  '  tileIndex(tx, ty) { return tx * this.ty + ty; }' tiles
+
+add "tileOrigin disagrees with tileIndex" js/core/tiles.js \
+  '  tileOrigin(idx) { return [(idx % this.tx) * TILE, Math.floor(idx / this.tx) * TILE]; }' \
+  '  tileOrigin(idx) { return [Math.floor(idx / this.tx) * TILE, (idx % this.tx) * TILE]; }' tiles
+
+add "writeRect allocates a tile before checking the overlap is non-empty" js/core/tiles.js \
+  '        if (ix1 <= ix0 || iy1 <= iy0) continue;
+        const t = this.ensure(tx, ty);' \
+  '        const t = this.ensure(tx, ty);
+        if (ix1 <= ix0 || iy1 <= iy0) continue;' tiles
+
+add "clearRect deletes a tile it only partly covers" js/core/tiles.js \
+  '        if (ix1 - ix0 === TILE && iy1 - iy0 === TILE) {' \
+  '        if (ix1 - ix0 >= 1 && iy1 - iy0 >= 1) {' tiles
+
+add "the reflect border repeats the edge sample" js/core/tiles.js \
+  "      ? (i, n) => { const p = 2 * n - 2; if (n === 1) return 0; const k = ((i % p) + p) % p; return k < n ? k : p - k; }" \
+  "      ? (i, n) => { const p = 2 * n; if (n === 1) return 0; const k = ((i % p) + p) % p; return k < n ? k : p - k - 1; }" tiles
+
+add "the clamp border clamps to the tile, not the document" js/core/tiles.js \
+  '      : (i, n) => (i < 0 ? 0 : i >= n ? n - 1 : i);' \
+  '      : (i, n) => (i < 0 ? 0 : i >= n ? n : i);' tiles
+
+add "writeRect forgets to clip to the document height" js/core/tiles.js \
+  '        const iy1 = Math.min(r.y + r.h, oy + TILE, this.h);
+        if (ix1 <= ix0 || iy1 <= iy0) continue;' \
+  '        const iy1 = Math.min(r.y + r.h, oy + TILE);
+        if (ix1 <= ix0 || iy1 <= iy0) continue;' tiles
+
+add "equals() treats an absent tile as different from an all-zero one" js/core/tiles.js \
+  '          const av = a ? a[row + x] : 0;
+          const bv = b ? b[row + x] : 0;' \
+  '          const av = a ? a[row + x] : -1;
+          const bv = b ? b[row + x] : 0;' tiles
+
+add "equals() compares the dead corner outside the document too" js/core/tiles.js \
+  '      const xEnd = Math.min(TILE, this.w - ox);
+      const yEnd = Math.min(TILE, this.h - oy);
+      if (xEnd <= 0 || yEnd <= 0) continue;            // wholly outside' \
+  '      const xEnd = TILE;
+      const yEnd = TILE;
+      if (xEnd <= 0 || yEnd <= 0) continue;            // wholly outside' tiles
+
+add "contentBounds reads channel 0 instead of alpha for RGBA" js/core/tiles.js \
+  '    const aOff = C === 4 ? 3 : 0;      // alpha for RGBA, the value itself for a mask' \
+  '    const aOff = 0;      // alpha for RGBA, the value itself for a mask' tiles
+
+add "a transparent fill stores zeros instead of freeing the tiles" js/core/tiles.js \
+  '    if (allZero) { this.tiles.clear(); return; }' \
+  '    if (allZero) { /* keep them */ }' tiles
+
+add "clone shares its tile arrays with the original" js/core/tiles.js \
+  '    for (const [i, t] of this.tiles) s.tiles.set(i, t.slice());' \
+  '    for (const [i, t] of this.tiles) s.tiles.set(i, t);' tiles
+
+# ------------------------------------------------------------- composite.js
+add "clipBase snapshots the accumulated backdrop, not the base layer" js/core/composite.js \
+  '      clipBase = clipBase && clipBase.length === n ? clipBase : new Float32Array(n);
+      clipBase.set(cov);' \
+  '      clipBase = clipBase && clipBase.length === n ? clipBase : new Float32Array(n);
+      for (let i = 0; i < n; i++) clipBase[i] = dst[i * 4 + 3];' composite
+
+add "a clipping layer is clipped in colour instead of coverage" js/core/composite.js \
+  '      for (let i = 0; i < n; i++) cov[i] *= clipBase[i];' \
+  '      for (let i = 0; i < n; i++) src[i * 4] *= clipBase[i];' composite
+
+add "a pass-through group is isolated instead" js/core/composite.js \
+  '    if (layer.type === '"'"'group'"'"' && !layer.isolated) {' \
+  '    if (false) {' composite
+
+add "the layer mask multiplies colour rather than coverage" js/core/composite.js \
+  '    for (let i = 0; i < n; i++) cov[i] *= m[i];' \
+  '    for (let i = 0; i < n; i++) src[i * 4] *= m[i];' composite
+
+add "a non-clipping layer does not reset the clip base" js/core/composite.js \
+  '      if (!layer.clipping) clipBase = null;
+      continue;
+    }
+
+    src.fill(0);' \
+  '      continue;
+    }
+
+    src.fill(0);' composite
+
+add "the hot loop drops the (1 - ab) term (copy number two)" js/core/composite.js \
+  '        const cr = (1 - ab) * cs[c] + ab * b;' \
+  '        const cr = b;' composite
+
+add "the hot loop forgets to un-premultiply" js/core/composite.js \
+  '        const v = (as * cr + ab * cb[c] * (1 - as)) / ao;
+        dst[p + c] = linear ? linearToSrgb(v) : v;' \
+  '        const v = (as * cr + ab * cb[c] * (1 - as));
+        dst[p + c] = linear ? linearToSrgb(v) : v;' composite
+
+add "output alpha uses the source alpha alone" js/core/composite.js \
+  '    const ao = as + ab * (1 - as);
+    if (ao <= 0) { dst[p] = dst[p + 1] = dst[p + 2] = dst[p + 3] = 0; continue; }' \
+  '    const ao = as;
+    if (ao <= 0) { dst[p] = dst[p + 1] = dst[p + 2] = dst[p + 3] = 0; continue; }' composite
+
+add "fillOpacity is ignored" js/core/composite.js \
+  '  const o = layer.opacity * layer.fillOpacity;' \
+  '  const o = layer.opacity;' composite
+
+add "an invisible layer is composited anyway" js/core/composite.js \
+  '    if (!layer.visible) continue;' \
+  '    if (false) continue;' composite
+
+# --------------------------------------------------------------- history.js
+add "touch() re-captures a tile it already has (losing the original)" js/core/history.js \
+  '        if (m.has(idx)) continue;                  // already captured this stroke' \
+  '        if (false) continue;                  // already captured this stroke' history
+
+add "swap() restores but does not record the other direction" js/core/history.js \
+  '        const live = surface.tiles.get(idx);
+        m.set(idx, live ? live : null);' \
+  '        const live = surface.tiles.get(idx);' history
+
+add "an unallocated tile is restored as an allocated zero tile" js/core/history.js \
+  '        if (stored) surface.tiles.set(idx, stored);
+        else surface.tiles.delete(idx);' \
+  '        if (stored) surface.tiles.set(idx, stored);
+        else surface.tiles.set(idx, new surface.Ctor(surface.tiles.values().next().value.length));' history
+
+add "a new edit does not discard the redo branch" js/core/history.js \
+  '    this.future.length = 0;
+    if (this.onChange) this.onChange();
+    return t;
+  }' \
+  '    if (this.onChange) this.onChange();
+    return t;
+  }' history
+
+add "the history limit drops the NEWEST entry instead of the oldest" js/core/history.js \
+  '    while (this.past.length > this.limit) this.past.shift();' \
+  '    while (this.past.length > this.limit) this.past.pop();' history
+
+add "begin() coalesces regardless of label, so everything is one step" js/core/history.js \
+  '      if (this.open.label === label) return this.open;' \
+  '      return this.open;' history
+
+add "the structural snapshot CLONES surfaces instead of referencing them" js/core/history.js \
+  '    o.surface = l.surface;                 // reference, never a copy' \
+  '    o.surface = l.surface ? l.surface.clone() : null;' history
+
+add "restoreTree forgets the children of a group" js/core/history.js \
+  '    l.children = o.children ? restoreTree(o.children) : (o.type === '"'"'group'"'"' ? [] : null);' \
+  '    l.children = o.type === '"'"'group'"'"' ? [] : null;' history
+
+add "the tree snapshot shares its mutable arrays with the live layer" js/core/history.js \
+  '    for (const k of LAYER_PROPS) o[k] = Array.isArray(l[k]) ? l[k].slice() : l[k];' \
+  '    for (const k of LAYER_PROPS) o[k] = l[k];' history
+
+add "edit() commits without recording the tiles first" js/core/history.js \
+  '  history.begin(label, null);
+  history.touch(surface, r);' \
+  '  history.begin(label, null);' history
+
 # ---------------------------------------------------------------- runner
 
 BK=$(mktemp -d)
