@@ -2071,3 +2071,20 @@ body.sp-app .scanlines { display: none; }
   line-height: 1.35; margin-bottom: 6px; min-height: 56px;
 }
 .sp-textarea:focus { outline: none; border-color: #39ff8f; }
+
+/* ---- paths --------------------------------------------------------------- */
+.sp-path-list { display: flex; flex-direction: column; gap: 1px; margin-bottom: 6px; }
+.sp-path-row {
+  display: flex; align-items: center; gap: 4px; cursor: pointer;
+  background: rgba(10, 32, 20, 0.5); border-radius: 3px; padding: 3px 2px 3px 6px;
+}
+.sp-path-row.sel { background: rgba(26, 90, 56, 0.6); }
+.sp-path-name {
+  flex: 1 1 auto; min-width: 0; font-size: 11px; color: #cdebd8;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.sp-path-row.sel .sp-path-name { color: #39ff8f; }
+@media (max-width: 560px) {
+  .sp-path-row { min-height: 40px; }
+  .sp-path-name { font-size: 13px; }
+}

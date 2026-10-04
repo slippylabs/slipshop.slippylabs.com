@@ -11,6 +11,7 @@ import { el, panel, row, btn, slider, number, select, checkbox, text, toast, hin
 import { ADJUSTMENTS, ADJUST_KINDS, applyAdjust, adjustDefaults, parseCube } from '../core/adjust.js';
 import { FILTERS, FILTER_GROUPS, applyFilter, filterDefaults, radiusOf } from '../core/filters.js';
 import { Layer, newDoc } from '../core/doc.js';
+import { EFFECT_TYPES, EFFECT_LABELS, effectDefaults } from '../core/effects.js';
 import { Surface } from '../core/tiles.js';
 import { compositeDoc } from '../core/composite.js';
 import { resize, orient, FILTERS as RESAMPLE_FILTERS } from '../core/resample.js';
@@ -79,6 +80,17 @@ export function buildMenus(ed, view, opt, ctx) {
       { label: ed.active && ed.active.mask ? 'Delete mask' : 'Add mask', run: () => (ed.active && ed.active.mask ? ed.removeMask() : ed.addMask(ed.activeId, { fromSelection: !!ed.selection })) },
       { label: 'Apply mask', run: () => ed.removeMask(ed.activeId, { apply: true }), disabled: !(ed.active && ed.active.mask) },
       { sep: true },
+      { head: 'Layer style' },
+      ...EFFECT_TYPES.map((t) => ({
+        label: EFFECT_LABELS[t],
+        run: () => C.toggleEffect(t),
+        disabled: !ed.active,
+      })),
+      { label: 'Clear layer style', run: () => ed.setLayerProp(ed.activeId, 'effects', []), disabled: !(ed.active && ed.active.effects && ed.active.effects.length) },
+      { sep: true },
+      { label: 'Rasterise text', run: () => ed.rasterizeText(), disabled: !(ed.active && ed.active.text) },
+      { label: 'Rasterise shape', run: () => ed.rasterizeShape(), disabled: !(ed.active && ed.active.shape) },
+      { sep: true },
       { head: 'New adjustment layer' },
       ...ADJUST_KINDS.map((k) => ({ label: ADJUSTMENTS[k].label, run: () => C.adjustDialog(k, true) })),
       { sep: true },
@@ -100,11 +112,21 @@ export function buildMenus(ed, view, opt, ctx) {
       { sep: true },
       { label: 'Selection from layer mask', run: C.selFromMask, disabled: !(ed.active && ed.active.mask) },
       { label: 'Selection from layer alpha', run: C.selFromAlpha },
+      { sep: true },
+      { label: 'Selection from path', run: () => ed.pathToSelection(), disabled: !ed.activePath },
+      { label: 'Path from selection', run: () => ed.selectionToPath(), disabled: !ed.selection },
     ]],
-    ['Filter', () => FILTER_GROUPS.flatMap(([group, kinds]) => [
-      { head: group },
-      ...kinds.map((k) => ({ label: FILTERS[k].label, run: () => C.filterDialog(k) })),
-    ])],
+    ['Filter', () => [
+      // Liquify is a TOOL, not a dialog -- the warp is a drag on the canvas,
+      // and putting it behind a modal with its own small preview is the one
+      // part of Photoshop's version nobody enjoys. The menu entry selects it.
+      { label: 'Liquify', key: 'Q', run: () => C.pickTool('liquify') },
+      { sep: true },
+      ...FILTER_GROUPS.flatMap(([group, kinds]) => [
+        { head: group },
+        ...kinds.map((k) => ({ label: FILTERS[k].label, run: () => C.filterDialog(k) })),
+      ]),
+    ]],
     ['View', () => [
       { label: 'Zoom in', key: 'Ctrl++', run: () => view.zoomStep(1) },
       { label: 'Zoom out', key: 'Ctrl+-', run: () => view.zoomStep(-1) },
@@ -312,6 +334,27 @@ export function commands(ed, view, opt, ctx) {
   }
 
   const C = {
+    // --------------------------------------------------------- tools etc
+
+    /** Select a tool from a menu. `ctx.pickTool` is set by main.js, which
+     *  owns the rail and the cursor; going straight at ed.tool would leave
+     *  both showing the old one. */
+    pickTool(id) {
+      if (ctx.pickTool) ctx.pickTool(id);
+    },
+
+    /** Add or remove one layer effect, for the Layer ▸ Layer style menu. */
+    toggleEffect(type) {
+      const l = ed.active;
+      if (!l) return;
+      const have = (l.effects || []).find((e) => e.type === type);
+      const next = have
+        ? (l.effects || []).filter((e) => e.type !== type)
+        : [...(l.effects || []), effectDefaults(type)];
+      ed.setLayerProp(l.id, 'effects', next);
+      toast(have ? `${type} removed` : `${type} added`);
+    },
+
     // ------------------------------------------------------------- file
     async newDoc() {
       const p = { w: 1200, h: 800, bg: 'white' };
@@ -809,7 +852,9 @@ export function commands(ed, view, opt, ctx) {
     // ------------------------------------------------------------- view
     shortcuts() {
       const rows = [
-        ['Tools', 'V move, M marquee, L lasso, W wand, C crop, I eyedropper, B brush, E eraser, S clone, G gradient, T text, U shape, Z zoom, H hand'],
+        ['Tools', 'V move, M marquee, L lasso, W wand, C crop, I eyedropper, B brush, E eraser, S clone, G gradient, T text, U shape, P pen, A direct select, Q liquify, Z zoom, H hand'],
+        ['Pen', 'Click for a corner, drag for a curve, click the first anchor to close'],
+        ['Direct select', 'Shift breaks a handle pair into a cusp, Alt retracts a handle or inserts an anchor on the curve'],
         ['Brush', '[ and ] size, Shift+[ ] hardness, 0-9 opacity'],
         ['Colour', 'X swap foreground and background, D reset to black and white'],
         ['Edit', 'Ctrl+Z undo, Ctrl+Shift+Z redo, Ctrl+A select all, Ctrl+D deselect, Ctrl+Shift+I inverse'],
@@ -824,7 +869,7 @@ export function commands(ed, view, opt, ctx) {
     about() {
       modal('About SlipShop', el('div', {},
         el('p', { class: 'sp-note', text: 'An image editor that runs entirely in your browser. Nothing is uploaded, there is no account, and there is no server doing the work -- every pixel is processed on your own machine.' }),
-        el('p', { class: 'sp-note', text: 'Layers with 27 blend modes, masks and clipping, selections with real feathering, a pressure-sensitive brush engine, 19 adjustments (destructive or as non-destructive layers), 31 filters, and undo that stores only the tiles you actually painted.' }),
+        el('p', { class: 'sp-note', text: 'Layers with 27 blend modes, masks, clipping and nine layer effects; re-editable text with sixteen warp styles; bezier paths and shape layers; a liquify mesh; selections with real feathering; a pressure-sensitive brush engine; 19 adjustments (destructive or as non-destructive layers); 31 filters; and undo that stores only the tiles you actually painted.' }),
         el('p', { class: 'sp-note' }, 'Part of ', el('a', { href: 'https://projects.slippylabs.com/', style: { color: '#39ff8f' }, text: 'Slippy Labs' }), '.')),
       { okLabel: 'Close', cancelLabel: 'Close' });
     },

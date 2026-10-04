@@ -852,6 +852,164 @@ add "wrapping never breaks an overlong word" js/core/text.js \
   '    if (advance(word) > width && !line) {' \
   '    if (false && !line) {' text
 
+# ------------------------------------------------------- path.js / shape.js
+add "flatness measured to the chord's midpoint, not to the line" js/core/path.js \
+  '  const d1 = Math.abs((p1[0] - p0[0]) * dy - (p1[1] - p0[1]) * dx) / len;
+  const d2 = Math.abs((p2[0] - p0[0]) * dy - (p2[1] - p0[1]) * dx) / len;
+  return Math.max(d1, d2);' \
+  '  const mx = (p0[0] + p3[0]) / 2, my = (p0[1] + p3[1]) / 2;
+  return Math.max(Math.hypot(p1[0] - mx, p1[1] - my), Math.hypot(p2[0] - mx, p2[1] - my)) / 8;' path
+
+add "subdivision stops one level too early" js/core/path.js \
+  '  if (depth > 18 || flatness(p0, p1, p2, p3) <= tol) {' \
+  '  if (depth > 18 || flatness(p0, p1, p2, p3) <= tol * 4) {' path
+
+add "a closed subpath repeats its first point" js/core/path.js \
+  '  if (sp.closed) out.pop();                 // the wrap point' \
+  '  void 0;' path
+
+# This mutation also makes the flatness measure stop shrinking, so it used to
+# recurse to the depth cap on every curve. The cap is now 10 rather than 18,
+# which keeps a broken subdivision to 1024 segments instead of 262,144 -- the
+# oracle ran for half an hour on it before the cap was lowered.
+add "the de Casteljau midpoint taken as the chord midpoint" js/core/path.js \
+  '  const mid = m(p012, p123);' \
+  '  const mid = m(p0, p3);' path
+
+add "KAPPA set to the naive 0.5" js/core/path.js \
+  'export const KAPPA = 0.5522847498307936;' \
+  'export const KAPPA = 0.5;' path
+
+add "the ellipse's handles point the same way on every anchor" js/core/path.js \
+  '            { x: cx, y: y + h, inX: cx + kx, inY: y + h, outX: cx - kx, outY: y + h },' \
+  '            { x: cx, y: y + h, inX: cx - kx, inY: y + h, outX: cx + kx, outY: y + h },' path
+
+add "the round rect's first handle sits on its anchor" js/core/path.js \
+  '      push(x + r, y, x + r - k, y, x + r, y);   // in = end of the top-left arc' \
+  '      push(x + r, y, x + r, y, x + r, y);' path
+
+add "a polygon starts at angle zero instead of straight up" js/core/path.js \
+  '      const rot = (params.rotation || 0) - Math.PI / 2;
+      const pts = [];
+      for (let i = 0; i < sides; i++) {' \
+  '      const rot = (params.rotation || 0);
+      const pts = [];
+      for (let i = 0; i < sides; i++) {' path
+
+add "a star's inner radius applied to the wrong vertices" js/core/path.js \
+  '        const k = i % 2 ? inner : 1;' \
+  '        const k = i % 2 ? 1 : inner;' path
+
+add "the stroke's segment quads are not wound consistently" js/core/path.js \
+  'function orient(ring) {
+  return signedArea(ring) < 0 ? ring.slice().reverse() : ring;
+}' \
+  'function orient(ring) {
+  return ring;
+}' path
+
+add "the stroke offset uses the tangent instead of the normal" js/core/path.js \
+  '      const nx = -dy / len * h, ny = dx / len * h;' \
+  '      const nx = dx / len * h, ny = dy / len * h;' path
+
+add "a square cap extends the wrong way at one end" js/core/path.js \
+  '    for (const [idx, dir, sign] of [[0, dirs[0], -1], [n - 1, dirs[segs - 1], 1]]) {' \
+  '    for (const [idx, dir, sign] of [[0, dirs[0], 1], [n - 1, dirs[segs - 1], 1]]) {' path
+
+add "caps drawn on a closed path too" js/core/path.js \
+  '    if (run.closed) continue;' \
+  '    if (false) continue;' path
+
+add "the mitre limit is never applied" js/core/path.js \
+  '      if (cosHalf < 1e-9 || 1 / cosHalf > miterLimit) { rings.push(orient([P, a, b])); continue; }' \
+  '      if (cosHalf < 1e-9) { rings.push(orient([P, a, b])); continue; }' path
+
+add "the mitre length drops its half-angle term" js/core/path.js \
+  '      const mlen = h / cosHalf;' \
+  '      const mlen = h;' path
+
+add "the join picks the inner side" js/core/path.js \
+  '      const s = cross > 0 ? -1 : 1;' \
+  '      const s = cross > 0 ? 1 : -1;' path
+
+add "the circle step count ignores the tolerance" js/core/path.js \
+  '  const th = 2 * Math.acos(clamp(1 - tol / r, -1, 1));
+  return clamp(Math.ceil(TAU / th), 6, 256);' \
+  '  void tol;
+  return 8;' path
+
+add "the dash phase restarts at every vertex" js/core/path.js \
+  '      const take = Math.min(seg, left);' \
+  '      const take = seg;' path
+
+add "an empty dash pattern strokes nothing" js/core/path.js \
+  '  if (!pat.length || pat.every((d) => d === 0)) return [{ pts: ring, closed }];' \
+  '  if (!pat.length) return [{ pts: ring, closed }];' path
+
+add "a transform moves the anchors but not the handles" js/core/path.js \
+  '        const [ix, iy] = t(p.inX, p.inY);
+        const [ox, oy] = t(p.outX, p.outY);' \
+  '        const [ix, iy] = [p.inX, p.inY];
+        const [ox, oy] = [p.outX, p.outY];' path
+
+add "reversing a path leaves the handles swapped the wrong way" js/core/path.js \
+  '        x: p.x, y: p.y, inX: p.outX, inY: p.outY, outX: p.inX, outY: p.inY,' \
+  '        x: p.x, y: p.y, inX: p.inX, inY: p.inY, outX: p.outX, outY: p.outY,' path
+
+add "a quadratic converted with halves instead of thirds" js/core/path.js \
+  '        curveTo(cx + (2 / 3) * (qx - cx), cy + (2 / 3) * (qy - cy),
+          x + (2 / 3) * (qx - x), y + (2 / 3) * (qy - y), x, y);
+        prevQCtrl = [qx, qy]; prevCtrl = null;' \
+  '        curveTo(cx + 0.5 * (qx - cx), cy + 0.5 * (qy - cy),
+          x + 0.5 * (qx - x), y + 0.5 * (qy - y), x, y);
+        prevQCtrl = [qx, qy]; prevCtrl = null;' path
+
+add "a smooth cubic does not reflect the previous control point" js/core/path.js \
+  '        const c1 = prevCtrl ? [2 * cx - prevCtrl[0], 2 * cy - prevCtrl[1]] : [cx, cy];' \
+  '        const c1 = prevCtrl ? [prevCtrl[0], prevCtrl[1]] : [cx, cy];' path
+
+add "a truncated SVG command is read as NaN" js/core/path.js \
+  "    if (head !== 'Z' && !have(NEED[head] || 0)) break;" \
+  '    if (false) break;' path
+
+add "Z leaves a duplicate anchor on the first one" js/core/path.js \
+  '            if (Math.abs(f0.x - l0.x) < 1e-9 && Math.abs(f0.y - l0.y) < 1e-9) {' \
+  '            if (false) {' path
+
+add "even-odd and non-zero winding swapped" js/core/path.js \
+  '  return polygonsCoverage(flattenPath(path, tol), { evenOdd, antialias });' \
+  '  return polygonsCoverage(flattenPath(path, tol), { evenOdd: !evenOdd, antialias });' path
+
+add "inserting an anchor drops a corner on the flattened curve" js/core/path.js \
+  '  const q0 = lerpP(p0, p1), q1 = lerpP(p1, p2), q2 = lerpP(p2, p3);
+  const r0 = lerpP(q0, q1), r1 = lerpP(q1, q2);
+  const mid = lerpP(r0, r1);' \
+  '  const q0 = p0, q1 = p1, q2 = p3;
+  const r0 = p0, r1 = p3;
+  const mid = cubicPoint(p0, p1, p2, p3, t);' path
+
+add "removing the last anchor leaves an empty subpath behind" js/core/path.js \
+  '  if (sp.anchors.length < 1) out.subpaths.splice(si, 1);' \
+  '  void 0;' path
+
+add "the shape bounds allow only for half the stroke width" js/core/shape.js \
+  "    pad += s.join === 'miter' ? h * Math.max(1, s.miterLimit) : h;" \
+  '    pad += h;' path
+
+add "a shape's stroke is drawn under its fill" js/core/shape.js \
+  '  if (s.fillEnabled && s.fillAlpha > 0) {' \
+  '  if (s.strokeEnabled && s.strokeAlpha > 0 && s.strokeWidth > 0) {' path
+
+add "a shape ignores its fill opacity" js/core/shape.js \
+  '      const a = clamp01(cov[sy * cr.w + sx]) * alpha;' \
+  '      const a = clamp01(cov[sy * cr.w + sx]);' path
+
+add "several rings rasterised one at a time, so joins seam" js/core/select.js \
+  '      for (const points of rs) {
+        const n = points.length;' \
+  '      for (const points of rs.slice(0, 1)) {
+        const n = points.length;' path
+
 # ---------------------------------------------------------------- runner
 
 BK=$(mktemp -d)

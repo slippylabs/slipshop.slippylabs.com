@@ -169,26 +169,134 @@ export class View {
     const { w, h } = this.ed.doc;
     g.setTransform(1, 0, 0, 1, 0, 0);
     g.clearRect(0, 0, w, h);
-    const paths = this.ed.selectionPaths;
-    if (!paths || !paths.length) { this.stopAnts(); return; }
     const z = Math.max(0.05, this.ed.zoom);
-    const lw = 1 / z;
-    const dash = 4 / z;
-    g.lineWidth = lw;
-    for (const [colour, offset] of [['#ffffff', 0], ['#000000', dash]]) {
-      g.strokeStyle = colour;
-      g.setLineDash([dash, dash]);
-      g.lineDashOffset = offset + this.antsPhase / z;
-      g.beginPath();
-      for (const p of paths) {
-        g.moveTo(p[0][0], p[0][1]);
-        for (let i = 1; i < p.length; i++) g.lineTo(p[i][0], p[i][1]);
-        g.closePath();
+    const paths = this.ed.selectionPaths;
+    if (paths && paths.length) {
+      const lw = 1 / z;
+      const dash = 4 / z;
+      g.lineWidth = lw;
+      for (const [colour, offset] of [['#ffffff', 0], ['#000000', dash]]) {
+        g.strokeStyle = colour;
+        g.setLineDash([dash, dash]);
+        g.lineDashOffset = offset + this.antsPhase / z;
+        g.beginPath();
+        for (const p of paths) {
+          g.moveTo(p[0][0], p[0][1]);
+          for (let i = 1; i < p.length; i++) g.lineTo(p[i][0], p[i][1]);
+          g.closePath();
+        }
+        g.stroke();
       }
-      g.stroke();
+      g.setLineDash([]);
+      this.startAnts();
+    } else {
+      this.stopAnts();
     }
-    this.startAnts();
+    // The bezier path overlay shares this canvas, so it has to be redrawn
+    // every time the ants are -- the crawl repaints eight times a second and
+    // would otherwise wipe the path out between frames.
+    this.paintPathOverlay(g, z);
+    this.paintFreezeOverlay(g);
   }
+
+  /**
+   * The liquify freeze mask, as a red wash.
+   *
+   * Drawn at MESH resolution and scaled up, not per pixel: the mask lives on
+   * the mesh, and interpolating it to every pixel to draw a translucent
+   * overlay would cost more than the warp it is guarding.
+   */
+  paintFreezeOverlay(g) {
+    const s = this.ed.liquify;
+    if (!s) return;
+    const m = s.mesh;
+    let any = false;
+    for (let i = 0; i < m.freeze.length; i++) if (m.freeze[i] > 0.01) { any = true; break; }
+    if (!any) return;
+    g.save();
+    for (let j = 0; j < m.ny; j++) {
+      for (let i = 0; i < m.nx; i++) {
+        const v = m.freeze[j * m.nx + i];
+        if (v <= 0.01) continue;
+        g.fillStyle = `rgba(255,70,70,${(v * 0.35).toFixed(3)})`;
+        g.fillRect(m.nodeX(i) - m.step / 2, m.nodeY(j) - m.step / 2, m.step, m.step);
+      }
+    }
+    g.restore();
+  }
+
+  /**
+   * The active bezier path: its outline, its anchors and their handles.
+   *
+   * Every size is divided by the zoom so it stays constant in SCREEN pixels.
+   * At 800% a 4-document-pixel anchor would be 32px across and cover the
+   * curve it is meant to let you grab.
+   */
+  paintPathOverlay(g, z) {
+    const rec = this.ed.activePath;
+    if (!rec || !rec.path || !rec.path.subpaths.length) return;
+    const lw = 1 / z;
+    const an = 3.5 / z;
+
+    g.lineWidth = lw * 1.6;
+    g.strokeStyle = 'rgba(0,0,0,0.65)';
+    const trace = () => {
+      g.beginPath();
+      for (const sp of rec.path.subpaths) {
+        const a = sp.anchors;
+        if (!a.length) continue;
+        g.moveTo(a[0].x, a[0].y);
+        const n = sp.closed ? a.length : a.length - 1;
+        for (let i = 0; i < n; i++) {
+          const c = a[i], d = a[(i + 1) % a.length];
+          g.bezierCurveTo(c.outX, c.outY, d.inX, d.inY, d.x, d.y);
+        }
+        if (sp.closed) g.closePath();
+      }
+    };
+    trace();
+    g.stroke();
+    g.lineWidth = lw * 0.8;
+    g.strokeStyle = '#39ff8f';
+    trace();
+    g.stroke();
+
+    // Handles, then anchors on top: a corner point has its handles sitting
+    // exactly on it, and the anchor is the bigger target.
+    g.lineWidth = lw;
+    g.strokeStyle = 'rgba(57,255,143,0.55)';
+    g.fillStyle = '#04120b';
+    for (const sp of rec.path.subpaths) {
+      for (const a of sp.anchors) {
+        for (const [hx, hy] of [[a.inX, a.inY], [a.outX, a.outY]]) {
+          if (Math.abs(hx - a.x) < 1e-9 && Math.abs(hy - a.y) < 1e-9) continue;
+          g.beginPath();
+          g.moveTo(a.x, a.y);
+          g.lineTo(hx, hy);
+          g.stroke();
+          g.beginPath();
+          g.arc(hx, hy, an * 0.7, 0, Math.PI * 2);
+          g.fill();
+          g.stroke();
+        }
+      }
+    }
+    for (const sp of rec.path.subpaths) {
+      sp.anchors.forEach((a, i) => {
+        g.beginPath();
+        g.rect(a.x - an, a.y - an, an * 2, an * 2);
+        // The first anchor is filled, so you can see where closing the path
+        // would snap to.
+        g.fillStyle = i === 0 ? '#39ff8f' : '#04120b';
+        g.fill();
+        g.strokeStyle = '#39ff8f';
+        g.stroke();
+      });
+    }
+  }
+
+  /** Redraw the overlay after a path edit. */
+  drawPaths() { this.drawAnts(); }
 
   startAnts() {
     if (this.antsTimer !== null) return;

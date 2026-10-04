@@ -24,6 +24,9 @@ import { applyAdjust } from '../core/adjust.js';
 import { gaussianBlur, unsharpMask } from '../core/convolve.js';
 import { luma709, rect, rectUnion, rectIntersect, rectEmpty, clamp, clamp01, lerp } from '../core/util.js';
 import { toHex } from '../core/color.js';
+import { clonePath, shapePath, nearestOnPath, insertAnchorNear } from '../core/path.js';
+import { DIRECTIONAL } from '../core/liquify.js';
+import { renderShape, shapeBounds } from '../core/shape.js';
 import { hint, toast } from './ui.js';
 
 export const TOOLS = [
@@ -47,6 +50,9 @@ export const TOOLS = [
   { id: 'gradient', label: 'Gradient', icon: '▤', key: 'g', group: 5 },
   { id: 'bucket', label: 'Paint Bucket', icon: '⛃', key: 'G', group: 5 },
   { id: 'shape', label: 'Shape', icon: '■', key: 'u', group: 5 },
+  { id: 'liquify', label: 'Liquify', icon: '\u224b', key: 'q', group: 5 },
+  { id: 'pen', label: 'Pen', icon: '\u2712', key: 'p', group: 6 },
+  { id: 'node', label: 'Direct Select', icon: '\u2301', key: 'a', group: 6 },
   { id: 'text', label: 'Text', icon: 'T', key: 't', group: 6 },
   { id: 'zoom', label: 'Zoom', icon: '⌕', key: 'z', group: 7 },
   { id: 'hand', label: 'Hand', icon: '✋', key: 'h', group: 7 },
@@ -74,6 +80,20 @@ export function defaultToolOptions() {
     gradientDither: true,
     shapeKind: 'rect',
     shapeFill: true,
+    shapeAsLayer: true,
+    shapeSides: 6,
+    shapePoints: 5,
+    shapeInner: 0.5,
+    shapeRadius: 14,
+    shapeStroke: false,
+    shapeStrokeWidth: 3,
+    liquifyMode: 'push',
+    liquifySize: 90,
+    liquifyStrength: 0.5,
+    penStrokeWidth: 2,
+    penCap: 'round',
+    penJoin: 'miter',
+    pathEvenOdd: false,
     strength: 0.5,
     exposure: 0.3,
     cloneAligned: true,
@@ -121,6 +141,9 @@ export class Gesture {
     if (this.tool === 'crop') { this.mode = 'crop'; return; }
     if (this.tool === 'shape') { this.mode = 'shape'; return; }
     if (this.tool === 'text') return this.placeText(x, y);
+    if (this.tool === 'liquify') return this.liquifyDown(e, x, y);
+    if (this.tool === 'pen') return this.penDown(e, x, y);
+    if (this.tool === 'node') return this.nodeDown(e, x, y);
     this.mode = 'select';
   }
 
@@ -148,6 +171,12 @@ export class Gesture {
       case 'zoom':
         this.lastDoc = [x, y];
         return this.previewShape(x, y);
+      case 'liquify':
+        return this.liquifyDrag(x, y);
+      case 'pen':
+        return this.penDrag(x, y);
+      case 'node':
+        return this.nodeDrag(x, y);
       default:
     }
   }
@@ -164,6 +193,9 @@ export class Gesture {
       case 'crop': return this.commitCrop(x, y);
       case 'shape': return this.commitShape(x, y);
       case 'zoom': return this.commitZoom(e, x, y);
+      case 'liquify': return this.liquifyUp();
+      case 'pen': return this.penUp();
+      case 'node': return this.nodeUp();
       default:
         this.view.clearPreview();
     }
@@ -660,38 +692,287 @@ export class Gesture {
     this.active = false;
   }
 
+  // ------------------------------------------------------------- liquify
+
+  /**
+   * Liquify dabs along the drag.
+   *
+   * The dab SPACING is a fraction of the brush radius, not every pointer
+   * event: a slow drag fires a hundred events over ten pixels, and a hundred
+   * overlapping dabs at the same place compose into a far bigger warp than
+   * the same drag made quickly. Spacing makes the result depend on where the
+   * pointer went rather than on how fast it got there.
+   */
+  liquifyDown(e, x, y) {
+    const ed = this.ed;
+    if (!ed.beginLiquify()) {
+      toast('Liquify needs an unlocked pixel layer', { bad: true });
+      this.active = false;
+      return;
+    }
+    this.mode = 'liquify';
+    this.liqLast = [x, y];
+    const tool = this.opt.liquifyMode;
+    // A click with no drag still does something for the non-directional
+    // tools; for push and shift there is no direction yet, so it waits.
+    if (!DIRECTIONAL.has(tool)) {
+      ed.liquifyDab(tool, { x, y, radius: this.opt.liquifySize / 2, strength: this.opt.liquifyStrength });
+    }
+  }
+
+  liquifyDrag(x, y) {
+    const ed = this.ed;
+    const radius = this.opt.liquifySize / 2;
+    const spacing = Math.max(1, radius * 0.25);
+    const tool = this.opt.liquifyMode;
+    let [lx, ly] = this.liqLast;
+    let dist = Math.hypot(x - lx, y - ly);
+    if (dist < spacing) return;
+    const ux = (x - lx) / dist, uy = (y - ly) / dist;
+    while (dist >= spacing) {
+      const nx = lx + ux * spacing, ny = ly + uy * spacing;
+      ed.liquifyDab(tool, {
+        x: nx, y: ny, radius, strength: this.opt.liquifyStrength,
+        dx: ux * spacing, dy: uy * spacing,
+      });
+      lx = nx; ly = ny;
+      dist -= spacing;
+    }
+    this.liqLast = [lx, ly];
+  }
+
+  liquifyUp() {
+    // The session stays OPEN across strokes, so stroke after stroke keeps
+    // accumulating in the same mesh and the image is still only resampled
+    // once from the original. It is banked when the tool or layer changes,
+    // or when Apply is pressed.
+    this.view.drawAnts();
+  }
+
+  // --------------------------------------------------------------- the pen
+
+  /**
+   * Click to drop a corner anchor; drag to pull its handles out.
+   *
+   * The dragged handle is SYMMETRIC -- the in handle mirrors the out handle
+   * through the anchor -- which is what makes a drawn curve smooth without
+   * asking for it. Breaking the pair is the Direct Select tool's job, on
+   * Shift, because wanting a cusp is the rarer case and putting it on this
+   * gesture would make every smooth curve a two-step operation.
+   *
+   * Clicking the first anchor closes the subpath; clicking the last one ends
+   * it open, which is the only way to draw a line that is not a loop.
+   */
+  penDown(e, x, y) {
+    const ed = this.ed;
+    const rec = ed.ensureWorkPath();
+    const p = clonePath(rec.path);
+    if (!p.subpaths.length || p.subpaths[p.subpaths.length - 1].closed) {
+      p.subpaths.push({ closed: false, anchors: [] });
+    }
+    const sp = p.subpaths[p.subpaths.length - 1];
+    // The reach is in SCREEN pixels, so zooming in does not make the first
+    // anchor impossible to hit.
+    const near = 8 / Math.max(0.05, ed.zoom);
+
+    if (sp.anchors.length > 1) {
+      const first = sp.anchors[0];
+      if (Math.hypot(first.x - x, first.y - y) <= near) {
+        sp.closed = true;
+        ed.setPathGeometry(rec.id, p, { label: 'Close path' });
+        this.active = false;
+        this.view.drawPaths();
+        hint('Path closed. Fill it, stroke it or turn it into a selection from the Paths panel.');
+        return;
+      }
+      const last = sp.anchors[sp.anchors.length - 1];
+      if (Math.hypot(last.x - x, last.y - y) <= near) {
+        p.subpaths.push({ closed: false, anchors: [] });
+        ed.setPathGeometry(rec.id, p, { label: 'End path' });
+        this.active = false;
+        this.view.drawPaths();
+        return;
+      }
+    }
+
+    sp.anchors.push({ x, y, inX: x, inY: y, outX: x, outY: y });
+    ed.setPathGeometry(rec.id, p, { live: true, label: 'Draw path' });
+    this.mode = 'pen';
+    this.penRec = rec.id;
+    this.penSub = p.subpaths.length - 1;
+    this.penIndex = sp.anchors.length - 1;
+    this.view.drawPaths();
+  }
+
+  penDrag(x, y) {
+    const ed = this.ed;
+    const rec = (ed.doc.paths || []).find((q) => q.id === this.penRec);
+    if (!rec) return;
+    const p = clonePath(rec.path);
+    const sp = p.subpaths[this.penSub];
+    const an = sp && sp.anchors[this.penIndex];
+    if (!an) return;
+    an.outX = x; an.outY = y;
+    an.inX = 2 * an.x - x; an.inY = 2 * an.y - y;
+    ed.setPathGeometry(rec.id, p, { live: true, label: 'Draw path' });
+    this.view.drawPaths();
+  }
+
+  penUp() {
+    this.ed.history.commit();
+    this.ed.emit('paths');
+    this.view.drawPaths();
+  }
+
+  // ----------------------------------------------------- direct selection
+
+  /**
+   * Grab the nearest anchor or handle within reach.
+   *
+   * Handles are tested BEFORE the anchor at the same distance: on a corner
+   * point the handles sit exactly on top of the anchor, and letting the
+   * anchor win the tie would make pulling them back out impossible.
+   */
+  nodeDown(e, x, y) {
+    const ed = this.ed;
+    const rec = ed.activePath;
+    if (!rec) { toast('No path is selected', { bad: true }); this.active = false; return; }
+    const near = 9 / Math.max(0.05, ed.zoom);
+    let best = null;
+    rec.path.subpaths.forEach((sp, si) => sp.anchors.forEach((an, ai) => {
+      for (const which of ['out', 'in', 'anchor']) {
+        const px = which === 'anchor' ? an.x : an[which + 'X'];
+        const py = which === 'anchor' ? an.y : an[which + 'Y'];
+        const d = Math.hypot(px - x, py - y);
+        if (d <= near && (!best || d < best.d - 1e-9)) best = { d, si, ai, which };
+      }
+    }));
+
+    if (!best) {
+      // Nothing under the pointer. Alt on the curve itself inserts an anchor
+      // where you clicked, which is how a path already drawn gains detail.
+      const hit = nearestOnPath(rec.path, x, y);
+      if (e.altKey && hit.dist <= near * 2) {
+        const p = insertAnchorNear(rec.path, x, y, near * 2);
+        if (p) { ed.setPathGeometry(rec.id, p, { label: 'Insert anchor' }); this.view.drawPaths(); }
+      }
+      this.active = false;
+      return;
+    }
+    // Alt on an ANCHOR retracts its handles: a smooth point becomes a corner,
+    // the inverse of dragging them out with the pen.
+    if (e.altKey && best.which === 'anchor') {
+      const p = clonePath(rec.path);
+      const an = p.subpaths[best.si].anchors[best.ai];
+      an.inX = an.x; an.inY = an.y; an.outX = an.x; an.outY = an.y;
+      ed.setPathGeometry(rec.id, p, { label: 'Corner point' });
+      this.active = false;
+      this.view.drawPaths();
+      return;
+    }
+    this.mode = 'node';
+    this.nodeHit = best;
+    this.nodeRec = rec.id;
+    this.nodeBreak = e.shiftKey;
+  }
+
+  nodeDrag(x, y) {
+    const ed = this.ed;
+    const rec = (ed.doc.paths || []).find((q) => q.id === this.nodeRec);
+    if (!rec || !this.nodeHit) return;
+    const { si, ai, which } = this.nodeHit;
+    const p = clonePath(rec.path);
+    const sp = p.subpaths[si];
+    const an = sp && sp.anchors[ai];
+    if (!an) return;
+    if (which === 'anchor') {
+      // Moving an anchor moves its handles with it. Absolute handles are the
+      // right storage for every geometric operation in path.js; this is the
+      // one line that costs.
+      const dx = x - an.x, dy = y - an.y;
+      an.x = x; an.y = y;
+      an.inX += dx; an.inY += dy; an.outX += dx; an.outY += dy;
+    } else {
+      an[which + 'X'] = x;
+      an[which + 'Y'] = y;
+      if (!this.nodeBreak) {
+        const other = which === 'out' ? 'in' : 'out';
+        an[other + 'X'] = 2 * an.x - x;
+        an[other + 'Y'] = 2 * an.y - y;
+      }
+    }
+    ed.setPathGeometry(rec.id, p, { live: true, label: 'Move anchor' });
+    this.view.drawPaths();
+  }
+
+  nodeUp() {
+    this.ed.history.commit();
+    this.ed.emit('paths');
+    this.view.drawPaths();
+  }
+
   commitShape(x, y) {
     const ed = this.ed;
-    const surface = ed.target;
-    if (!surface || ed.active.locked) { this.view.clearPreview(); return; }
     const [sx, sy] = this.startDoc;
-    if (Math.abs(x - sx) < 1 || Math.abs(y - sy) < 1) { this.view.clearPreview(); return; }
-    const out = this.opt.shapeKind === 'ellipse'
-      ? ellipseCoverage(null, sx, sy, x, y, { antialias: this.opt.antialias })
-      : rectCoverage(null, sx, sy, x, y, { antialias: this.opt.antialias });
-    const r = rectIntersect(out.r, ed.doc.bounds);
-    if (rectEmpty(r)) { this.view.clearPreview(); return; }
+    this.view.clearPreview();
+    let box = { x: Math.min(sx, x), y: Math.min(sy, y), w: Math.abs(x - sx), h: Math.abs(y - sy) };
+    if (this.shift) {
+      // Shift squares it off, anchored at the corner the drag STARTED from so
+      // the shape still grows the way the pointer went.
+      const side = Math.max(box.w, box.h);
+      box = { x: sx < x ? sx : sx - side, y: sy < y ? sy : sy - side, w: side, h: side };
+    }
+    const open = this.opt.shapeKind === 'line' || this.opt.shapeKind === 'arrow';
+    // A line is not a box: it runs from where the drag began to where it
+    // ended, so its width and height are signed.
+    if (open) box = { x: sx, y: sy, w: x - sx, h: y - sy };
+    if (Math.abs(box.w) < 1 && Math.abs(box.h) < 1) return;
+
+    const params = {
+      radius: this.opt.shapeRadius, sides: this.opt.shapeSides,
+      points: this.opt.shapePoints, innerRatio: this.opt.shapeInner,
+    };
+    const spec = {
+      kind: this.opt.shapeKind, params, box,
+      path: shapePath(this.opt.shapeKind, box, params),
+      // An open shape has no inside worth filling, so it ships stroked.
+      fillEnabled: open ? false : this.opt.shapeFill,
+      fill: [...ed.fg],
+      strokeEnabled: open ? true : this.opt.shapeStroke,
+      stroke: [...ed.bg],
+      strokeWidth: this.opt.shapeStrokeWidth,
+    };
+
+    if (this.opt.shapeAsLayer) { ed.addShapeLayer(spec); return; }
+
+    // Rasterised straight onto the active layer instead -- what the old shape
+    // tool did, and still the right answer when you are painting rather than
+    // laying out.
+    if (ed.rasterizeForPaint()) toast(`${ed.lastRasterised} rasterised`);
+    const surface = ed.target;
+    if (!surface || ed.active.locked) { toast('There is nothing to draw on', { bad: true }); return; }
+    const r = rectIntersect(shapeBounds(spec), ed.doc.bounds);
+    if (rectEmpty(r)) return;
+    const src = renderShape(spec, r);
     ed.editTarget('Shape', r, () => {
       const dst = surface.readRect(r);
       const sel = ed.selection ? ed.selection.readRect(r) : null;
-      for (let y2 = 0; y2 < r.h; y2++) {
-        for (let x2 = 0; x2 < r.w; x2++) {
-          const si = (r.y + y2 - out.r.y) * out.r.w + (r.x + x2 - out.r.x);
-          let a = out.cov[si];
-          const i = y2 * r.w + x2;
-          if (sel) a *= sel[i];
-          if (a <= 0) continue;
-          if (surface.channels === 1) { dst[i] = lerp(dst[i], luma709(ed.fg[0], ed.fg[1], ed.fg[2]), a); continue; }
-          const p = i * 4;
-          const ab = dst[p + 3];
-          const ao = a + ab * (1 - a);
-          for (let c = 0; c < 3; c++) dst[p + c] = (ed.fg[c] * a + dst[p + c] * ab * (1 - a)) / ao;
-          dst[p + 3] = ao;
+      for (let i2 = 0; i2 < r.w * r.h; i2++) {
+        const p2 = i2 * 4;
+        let a = src[p2 + 3];
+        if (sel) a *= sel[i2];
+        if (a <= 0) continue;
+        if (surface.channels === 1) {
+          dst[i2] = lerp(dst[i2], luma709(src[p2], src[p2 + 1], src[p2 + 2]), a);
+          continue;
         }
+        const ab = dst[p2 + 3];
+        const ao = a + ab * (1 - a);
+        for (let c = 0; c < 3; c++) dst[p2 + c] = (src[p2 + c] * a + dst[p2 + c] * ab * (1 - a)) / ao;
+        dst[p2 + 3] = ao;
       }
       surface.writeRect(r, dst);
     });
-    this.view.clearPreview();
   }
 
   commitCrop(x, y) {

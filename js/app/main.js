@@ -112,6 +112,7 @@ function afterDocChange() {
   renderAll();
 }
 ctx.afterDocChange = afterDocChange;
+ctx.pickTool = (id) => setTool(id);
 
 // --------------------------------------------------------------- the text tool
 ctx.placeText = (x, y) => {
@@ -157,6 +158,10 @@ function renderRail() {
 
 function setTool(id) {
   if (!TOOL_BY_ID[id] || ed.tool === id) return;
+  // Leaving the liquify tool banks the warp. Carrying an open session into
+  // another tool would mean the next brush stroke landed on pixels that are
+  // still only a preview, and the stroke would vanish on the next dab.
+  if (ed.tool === 'liquify' && id !== 'liquify') ed.commitLiquify();
   ed.tool = id;
   renderRail();
   renderDock(ed, view, opt, $('dock'));
@@ -200,6 +205,26 @@ ed.on((what) => {
     scheduleAutosave();
     return;
   }
+  if (what === 'rasterised') {
+    // Emitted when something had to turn a text or shape layer into pixels
+    // before it could write to it. The layer panel has already been rebuilt by
+    // the 'layers' event that came with it; this is the user-facing half.
+    hint(`${ed.lastRasterised} was rasterised so it could be edited as pixels.`);
+    return;
+  }
+  if (what === 'liquify') {
+    // The freeze mask lives on the overlay, and the Apply/Reset buttons and
+    // the hint text in the tool options depend on whether a session is open.
+    view.drawAnts();
+    renderDock(ed, view, opt, $('dock'));
+    renderStatus();
+    return;
+  }
+  if (what === 'paths') {
+    renderDock(ed, view, opt, $('dock'));
+    view.drawPaths();
+    return;
+  }
   if (what === 'layers' || what === 'history' || what === 'doc' || what === 'tool') {
     renderDock(ed, view, opt, $('dock'));
     renderMenubar();
@@ -213,6 +238,10 @@ ed.on((what) => {
   }
   if (what === 'view' || what === 'doc') renderStatus();
   if (what === 'layers' || what === 'doc') { view.repaint(); renderStatus(); }
+  // Undo and redo restore doc.paths along with everything else, so the
+  // overlay has to be redrawn on a history event too -- not only when a path
+  // tool emits.
+  if (what === 'history' || what === 'doc') view.drawPaths();
 });
 
 // --------------------------------------------------------------- pointer

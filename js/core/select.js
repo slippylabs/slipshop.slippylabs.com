@@ -187,34 +187,54 @@ export function ellipseCoverage(sel, x0, y0, x1, y1, { antialias = true } = {}) 
  * The fill rule is NON-ZERO, so a self-intersecting lasso selects its whole
  * outline rather than punching a hole where it crosses itself.
  */
-export function polygonCoverage(points, { antialias = true, evenOdd = false } = {}) {
-  if (!points || points.length < 3) return { r: rect(0, 0, 0, 0), cov: new Float32Array(0) };
+/** One ring, the common case. See polygonsCoverage for the general one. */
+export function polygonCoverage(points, opts = {}) {
+  return polygonsCoverage([points], opts);
+}
+
+/**
+ * Antialiased coverage for a set of rings.
+ *
+ * Several rings rather than one because that is what a real path is, and
+ * because it is how a STROKE is drawn here: each segment, join and cap is its
+ * own ring, all wound the same way, and non-zero winding turns their overlap
+ * into a union. Rasterising them one at a time and taking the maximum would
+ * double-count the antialiased edges where two rings meet, leaving a visible
+ * seam down the middle of every join.
+ */
+export function polygonsCoverage(rings, { antialias = true, evenOdd = false } = {}) {
+  const rs = (rings || []).filter((p) => p && p.length >= 3);
+  if (!rs.length) return { r: rect(0, 0, 0, 0), cov: new Float32Array(0) };
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-  for (const [x, y] of points) {
-    if (x < minX) minX = x; if (x > maxX) maxX = x;
-    if (y < minY) minY = y; if (y > maxY) maxY = y;
+  for (const points of rs) {
+    for (const [x, y] of points) {
+      if (x < minX) minX = x; if (x > maxX) maxX = x;
+      if (y < minY) minY = y; if (y > maxY) maxY = y;
+    }
   }
   const r = rect(Math.floor(minX), Math.floor(minY), Math.ceil(maxX) - Math.floor(minX) + 1, Math.ceil(maxY) - Math.floor(minY) + 1);
   if (r.w <= 0 || r.h <= 0) return { r: rect(0, 0, 0, 0), cov: new Float32Array(0) };
   const cov = new Float32Array(r.w * r.h);
   const SUB = antialias ? 4 : 1;
-  const n = points.length;
   const xs = [];
   const winds = [];
   for (let y = 0; y < r.h; y++) {
     for (let s = 0; s < SUB; s++) {
       const sy = r.y + y + (s + 0.5) / SUB;
       xs.length = 0; winds.length = 0;
-      for (let i = 0; i < n; i++) {
-        const [ax, ay] = points[i];
-        const [bx, by] = points[(i + 1) % n];
-        if (ay === by) continue;
-        // Half-open in y, so a vertex shared by two edges is counted once --
-        // the classic double-count that leaves a one-pixel gap at a vertex.
-        if ((sy >= ay && sy < by) || (sy >= by && sy < ay)) {
-          const t = (sy - ay) / (by - ay);
-          xs.push(ax + t * (bx - ax));
-          winds.push(by > ay ? 1 : -1);
+      for (const points of rs) {
+        const n = points.length;
+        for (let i = 0; i < n; i++) {
+          const [ax, ay] = points[i];
+          const [bx, by] = points[(i + 1) % n];
+          if (ay === by) continue;
+          // Half-open in y, so a vertex shared by two edges is counted once --
+          // the classic double-count that leaves a one-pixel gap at a vertex.
+          if ((sy >= ay && sy < by) || (sy >= by && sy < ay)) {
+            const t = (sy - ay) / (by - ay);
+            xs.push(ax + t * (bx - ax));
+            winds.push(by > ay ? 1 : -1);
+          }
         }
       }
       if (!xs.length) continue;

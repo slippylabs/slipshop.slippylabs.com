@@ -91,6 +91,10 @@ export class Doc {
     this.selection = opts.selection || null;
     this.name = opts.name || 'Untitled';
     this.guides = opts.guides || { h: [], v: [] };
+    /** Saved bezier paths: [{ id, name, path }]. On the document, not on the
+     *  editor, so they are undone with everything else and saved with the
+     *  file -- a path you spent ten minutes tracing is work, not UI state. */
+    this.paths = opts.paths || [];
     this.meta = opts.meta || {};
   }
 

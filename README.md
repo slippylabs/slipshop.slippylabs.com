@@ -1,9 +1,11 @@
 # SlipShop
 
 An image editor that runs entirely in your browser. Layers with 27 blend modes,
-masks and clipping, selections with real feathering, a pressure-sensitive brush
-engine, 19 adjustments (destructive or as non-destructive layers), 31 filters,
-and undo that stores only the tiles you actually painted.
+masks, clipping and nine layer effects; re-editable text with sixteen warp
+styles; bezier paths and shape layers; a liquify mesh; selections with real
+feathering; a pressure-sensitive brush engine; 19 adjustments (destructive or
+as non-destructive layers); 31 filters; and undo that stores only the tiles you
+actually painted.
 
 Nothing is uploaded. There is no account and no server doing the work — every
 pixel is processed on your own machine.
@@ -12,8 +14,29 @@ pixel is processed on your own machine.
 
 ## What it does
 
-- **Layers** — raster, group, adjustment and solid-fill layers; 27 blend modes;
-  opacity and fill opacity; layer masks; clipping masks; Blend If ranges.
+- **Layers** — raster, group, adjustment, solid-fill, text and shape layers;
+  27 blend modes; opacity and fill opacity; layer masks; clipping masks;
+  Blend If ranges.
+- **Layer effects** — drop shadow, inner shadow, outer and inner glow, stroke
+  (inside, centred or outside), colour overlay, gradient overlay, satin, and
+  bevel & emboss. Non-destructive: they are derived from the layer's own alpha,
+  so they follow it as you paint. Effects take the layer's *opacity* and not
+  its *fill*, which is what both sliders are for — drop Fill to 0 and a shape
+  keeps its stroke and shadow with nothing inside them.
+- **Text** — re-editable text layers. Change the words, the font, the size,
+  the tracking, the leading or the alignment and the layer redraws; point text
+  and paragraph text with wrapping and justification; underline and
+  strikethrough; text on a path; and sixteen warp styles (arc, arch, bulge,
+  flag, wave, fish, rise, fisheye, inflate, twist and the rest).
+- **Paths** — a pen tool with symmetric handles, Direct Select for anchors and
+  handles (Shift for a cusp, Alt to retract a handle or insert an anchor
+  without changing the shape), seven parametric shapes, re-editable shape
+  layers with a fill and a stroke, fill path, stroke path, path ↔ selection,
+  and SVG import and export.
+- **Liquify** — forward warp, bloat, pucker, twirl either way, shift pixels,
+  smooth, reconstruct, and a freeze mask. The warp is held as a displacement
+  mesh and the image is resampled once from the original however many strokes
+  you make, so it does not soften a little more each time.
 - **Selections** — rectangle, ellipse, lasso, polygonal lasso and magic wand,
   with add/subtract/intersect/exclude, antialiasing, and Select ▸ Modify
   (Expand, Contract, Feather, Border, Smooth) computed from an exact distance
@@ -39,10 +62,10 @@ pixel is processed on your own machine.
 
 The engine is a **pure pixel core** — `js/core/` has no DOM and no canvas in it
 and runs under node. That is what makes it testable: `tools/run_all.sh` runs
-eleven oracles over it, and most of them check against something that shares no
-code with what it is checking.
+fourteen oracles over it, and most of them check against something that shares
+no code with what it is checking.
 
-Three design decisions carry most of the weight:
+Five design decisions carry most of the weight:
 
 **Pixels live in sparse 256×256 tiles, and a missing tile *is* transparent.**
 A 6000×4000 document with one brush stroke on a new layer costs two tiles, not
@@ -58,11 +81,31 @@ the layer tree with the pixel surfaces held by reference.
 **The compositor is the W3C model, applied to a rectangle.** That is how the
 viewport repaints only what moved, and it is what makes the tiled and flat
 paths comparable — so an oracle can check that compositing a region equals the
-same region of a full composite.
+same region of a full composite. Layer effects slot into the same loop as
+extra buffers below and above the layer's own pixels, which is also why they
+need the rect GROWN by how far they read: an inner shadow is built from the
+inverted alpha blurred and offset, so on a sub-rect repaint it reads from well
+outside the region it draws into.
+
+**A text layer and a shape layer store a SPEC, and the pixels are derived.**
+Change a word or drag an anchor and the surface is rebuilt from the spec,
+which is what "re-editable" means. It is also why painting on one rasterises
+it first: otherwise the next keystroke would redraw over the brush stroke.
+
+**Liquify holds a displacement mesh, not warped pixels.** Every stroke
+accumulates in the mesh and the image is resampled once from the untouched
+original. Warping the pixels in place instead would soften them a little on
+every stroke, and fifty strokes into a portrait that is obvious. The mesh
+holds the INVERSE map — for each destination pixel, where to sample from —
+and stacking two dabs is function composition, `new(p) = dab(p) + old(p +
+dab(p))`, not addition: adding reads the old mesh at the undisplaced position,
+so pushing a feature across the canvas and then twirling where it ended up
+would twirl where it started.
 
 ## Verification
 
-`tools/run_all.sh` — eleven node oracles. The ones worth knowing about:
+`tools/run_all.sh` — fourteen node oracles, about 19,000 checks. The ones
+worth knowing about:
 
 | Oracle | Checked against |
 | --- | --- |
@@ -73,6 +116,10 @@ same region of a full composite.
 | `color` | `scikit-image`, with **its** constants substituted into our code — it ships an older sRGB matrix and the historical rounded Lab constants, so that is the only version of the comparison that proves anything. |
 | `history` | A property: 158 random edits, then a 400-move random walk through history, every position bit-identical to the state recorded for it. |
 | `adjust` | A property: every adjustment at its neutral setting must be the **identity**, and an adjustment layer must equal the destructive apply. |
+| `effects` | A property, and the important one: compositing a window of the document must be **bit-identical** to that window of the whole composite. Plus the closed-form ring area of a stroke, and the shadow's blur pinned to `scipy.ndimage.gaussian_filter`. |
+| `text` | A **synthetic font metric** — every character exactly ten units wide — which turns wrapping, alignment, tracking and justification into arithmetic with an exact answer. Then the real browser, for the one thing only it can settle: that our per-character placement matches what it draws when handed the whole string. |
+| `path` | **The browser's own `ctx.stroke()`**, which has the same cap, join and mitre-limit vocabulary, so it is a second implementation. Plus closed forms: a butt-capped stroke of width *w* along a run of length *L* covers exactly *L·w*, a square cap adds exactly *w*², and a round cap adds the area of the polygon the circle is flattened to. |
+| `liquify` | `scipy.ndimage.map_coordinates` for the resampling, and properties for the mesh: an empty mesh is a bit-exact pass-through, a whole-pixel mesh is an exact pixel shift, nothing outside the brush moves, a frozen node never moves. |
 
 `tools/controls.sh` re-introduces every bug the engine exists to prevent, one
 at a time, and confirms the oracle that guards it fails. An oracle that cannot
@@ -80,8 +127,11 @@ fail proves nothing — several here could not, the first time.
 
 `tools/playable.py` drives the real editor in a real browser: paint a stroke
 and assert the pixels, confine paint to a selection, commit and cancel a
-dialog, resize the document, export every format, round-trip a project file,
-and check every control reaches 40px at phone width.
+dialog, resize the document, export every format, round-trip a project file
+(the pixels **and** the text, shape, effect and path specs the pixels are
+derived from), draw a path with the pen and turn it into a selection and back,
+warp a bar with liquify and undo it, and check every control reaches 40px at
+phone width.
 
 ## Run it locally
 
@@ -130,20 +180,17 @@ transform, the project format — is written here.
 
 Stated plainly, because a feature list that quietly omits things is worse than
 a short one. All of these were in the plan for this editor and none of them are
-in v1.0.0:
+in v1.1.0:
 
-- **Layer effects** — drop shadow, inner shadow, glow, stroke, colour and
-  gradient overlay, bevel and emboss. The engine has the exact distance field
-  they need and `fillOpacity` is already separate from `opacity` for them, but
-  nothing draws them.
-- **Re-editable text.** Text is rasterised where you click. The font, size and
-  weight are chosen before placing it and cannot be changed afterwards.
-- **Paths and the pen tool.** No bezier paths, no shape layers beyond the
-  rectangle and ellipse the shape tool fills, no path-to-selection.
 - **Interactive Free Transform.** Scale and rotate exist as Image Size and the
   rotate/flip commands; there is no drag-handle box on the canvas.
-- **Liquify.** Twirl, pinch, spherize and wave are there as filters; the
-  interactive push/bloat/pucker brush is not.
+- **Boolean path operations.** Paths can be drawn, edited, filled, stroked,
+  turned into selections and exported, but there is no union/subtract/intersect
+  between two of them.
+- **Non-destructive liquify.** The mesh is live while you work and is baked
+  into the pixels when you press Apply; it is not stored on the layer.
+- **Pattern overlay and pattern stamp.** Eight of the nine Photoshop layer
+  effects are here; the pattern overlay needs a pattern library first.
 - **Content-aware fill and content-aware scale.** No PatchMatch inpainting and
   no seam carving.
 - **PSD import or export**, and no GIF, TIFF, ICO or SVG export. Opening reads

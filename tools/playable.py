@@ -249,8 +249,15 @@ def main():
         # against its own modal.
         pg.evaluate("void window.__slipshop.commands.adjustDialog('invert', false)")
         ok(wait_for(pg, "document.getElementById('modal').open"), "the Invert dialog opens")
+        # The preview is scheduled on requestAnimationFrame, so the modal being
+        # open does NOT mean the pixels have been rewritten yet. Reading them
+        # straight away is a race that passes most of the time and reports the
+        # ORIGINAL colour when it loses -- which reads as "the preview does not
+        # work" against code that works.
+        ok(wait_for(pg, "window.__slipshop.pixel(200, 150)[0] < 0.5"),
+           "the live preview inverts before OK is pressed")
         inverted = pg.evaluate("window.__slipshop.pixel(200, 150)")
-        ok(abs(inverted[0] - (1 - p_before[0])) < 0.02, f"the live preview inverts before OK is pressed {inverted}")
+        ok(abs(inverted[0] - (1 - p_before[0])) < 0.02, f"and inverts it exactly {inverted}")
         close_modal_and_settle(pg, "Cancel")
         ok(not pg.evaluate("document.getElementById('modal').open"), "Cancel closes it")
         restored = pg.evaluate("window.__slipshop.pixel(200, 150)")
@@ -355,6 +362,55 @@ def main():
         ok(rt["worst"] == 0, f"and every pixel is identical (worst {rt['worst']})")
         note(f"project file is {rt['bytes'] / 1024:.0f} KB")
 
+        # The pixels being identical is NOT enough any more: a text layer, a
+        # shape layer, a layer effect and a saved path are all data the pixels
+        # are derived from, and a save that dropped the spec would still
+        # round-trip the pixels perfectly -- and then be uneditable on reload.
+        spec = pg.evaluate("""(() => {
+          const io = window.__slipshop.io, ed = window.__slipshop.ed;
+          ed.newDocument(200, 160, { background: [1, 1, 1, 1] });
+          ed.addTextLayer(20, 80, { content: 'Keep me', fontSize: 30, tracking: 4 });
+          ed.setLayerProp(ed.activeId, 'effects', [
+            { type: 'dropShadow', enabled: true, color: [0, 0, 1], opacity: 0.4, angle: 45, distance: 5, spread: 0.2, size: 4, blend: 'multiply' },
+            { type: 'stroke', enabled: true, color: [1, 0, 0], opacity: 1, size: 2, position: 'outside', blend: 'normal' },
+          ]);
+          ed.addShapeLayer({ kind: 'star', box: { x: 20, y: 20, w: 90, h: 90 }, params: { points: 7, innerRatio: 0.4 } });
+          ed.addPath({ subpaths: [{ closed: true, anchors: [
+            { x: 10, y: 10, inX: 10, inY: 10, outX: 40, outY: 0 },
+            { x: 90, y: 30, inX: 60, inY: 50, outX: 90, outY: 30 },
+            { x: 30, y: 90, inX: 30, inY: 90, outX: 30, outY: 90 },
+          ] }] }, 'Kept path');
+          const bytes = io.saveProject(ed.doc);
+          const back = io.loadProject(bytes);
+          const txt = back.layers.find(l => l.text);
+          const shp = back.layers.find(l => l.shape);
+          const fx = back.layers.find(l => l.effects && l.effects.length);
+          return {
+            textContent: txt ? txt.text.content : null,
+            textTracking: txt ? txt.text.tracking : null,
+            textType: txt ? txt.type : null,
+            shapeKind: shp ? shp.shape.kind : null,
+            shapePoints: shp && shp.shape.params ? shp.shape.params.points : null,
+            shapeAnchors: shp && shp.shape.path ? shp.shape.path.subpaths[0].anchors.length : 0,
+            effectTypes: fx ? fx.effects.map(e => e.type).join(',') : null,
+            effectColour: fx ? JSON.stringify(fx.effects[0].color) : null,
+            pathCount: (back.paths || []).length,
+            pathName: (back.paths || [])[0] ? back.paths[0].name : null,
+            pathHandle: (back.paths || [])[0] ? back.paths[0].path.subpaths[0].anchors[0].outX : null,
+          };
+        })()""")
+        ok(spec["textType"] == "text", "a text layer comes back as a text layer")
+        ok(spec["textContent"] == "Keep me", f"with its words ({spec['textContent']})")
+        ok(spec["textTracking"] == 4, f"and its tracking ({spec['textTracking']})")
+        ok(spec["effectTypes"] == "dropShadow,stroke", f"both layer effects survive ({spec['effectTypes']})")
+        ok(spec["effectColour"] == "[0,0,1]", f"with their colours ({spec['effectColour']})")
+        ok(spec["shapeKind"] == "star", "a shape layer keeps its kind")
+        ok(spec["shapePoints"] == 7, f"and its parameters ({spec['shapePoints']})")
+        ok(spec["shapeAnchors"] == 14, f"and its path ({spec['shapeAnchors']} anchors)")
+        ok(spec["pathCount"] == 1, f"the saved path survives ({spec['pathCount']})")
+        ok(spec["pathName"] == "Kept path", f"with its name ({spec['pathName']})")
+        ok(spec["pathHandle"] == 40, f"and its bezier handles ({spec['pathHandle']})")
+
         print("\n-- keyboard --")
         pg.evaluate("window.__slipshop.setTool('brush')")
         size0 = pg.evaluate("window.__slipshop.ed.brush.size")
@@ -407,6 +463,225 @@ def main():
         ok(rec is not None, "the autosave is in IndexedDB after the reload")
         if rec:
             ok(rec["name"] == "playable-test", f"with the right document name ({rec['name']})")
+
+        print("\n-- liquify --")
+        pg.evaluate("""
+          const e = window.__slipshop.ed;
+          e.newDocument(300, 220, { background: [1, 1, 1, 1] });
+          e.addLayer();
+          // A hard vertical bar: a warp has to move its edge somewhere
+          // measurable, and a flat fill would warp invisibly.
+          const r = { x: 130, y: 40, w: 40, h: 140 };
+          const buf = new Float32Array(r.w * r.h * 4);
+          for (let i = 0; i < r.w * r.h; i++) { buf[i * 4] = 1; buf[i * 4 + 3] = 1; }
+          e.active.surface.writeRect(r, buf);
+          e.invalidate();
+          e.emit('layers');
+        """)
+        def bar_centroid():
+            return pg.evaluate("""(() => {
+              const e = window.__slipshop.ed, d = e.doc;
+              const px = e.active.surface.readRect({x:0,y:0,w:d.w,h:d.h});
+              let sx = 0, m = 0;
+              for (let y = 0; y < d.h; y++) for (let x = 0; x < d.w; x++) {
+                const v = px[(y*d.w+x)*4+3];
+                sx += x * v; m += v;
+              }
+              return m > 0 ? sx / m : -1;
+            })()""")
+        before = bar_centroid()
+        ok(before > 140 and before < 160, f"the bar starts near the middle ({before:.1f})")
+
+        pg.evaluate("""
+          const h = window.__slipshop;
+          h.setTool('liquify');
+          h.opt.liquifyMode = 'push';
+          h.opt.liquifySize = 160;
+          h.opt.liquifyStrength = 1;
+        """)
+        drag(pg, [(150, 110), (230, 110)], steps=10)
+        ok(wait_for(pg, "!!window.__slipshop.ed.liquify"), "a drag opens a liquify session")
+        after = bar_centroid()
+        ok(after > before + 5, f"pushing right moves the bar right ({before:.1f} -> {after:.1f})")
+        ok(pg.evaluate("window.__slipshop.stats().undo") == pg.evaluate("window.__slipshop.stats().undo"),
+           "and nothing is banked yet")
+
+        # Reset throws the warp away without touching the history.
+        n0 = pg.evaluate("window.__slipshop.stats().undo")
+        pg.evaluate("window.__slipshop.ed.resetLiquify()")
+        reset = bar_centroid()
+        ok(abs(reset - before) < 0.5, f"Reset puts the bar back exactly ({reset:.1f} vs {before:.1f})")
+        ok(pg.evaluate("window.__slipshop.stats().undo") == n0, "and pushes no undo step")
+
+        # Warp again, then Apply: one undo step, and undo restores the original.
+        drag(pg, [(150, 110), (220, 110)], steps=10)
+        warped = bar_centroid()
+        ok(warped > before + 4, f"a second warp moves it again ({warped:.1f})")
+        pg.evaluate("window.__slipshop.ed.commitLiquify()")
+        n1 = pg.evaluate("window.__slipshop.stats().undo")
+        ok(n1 == n0 + 1, f"Apply banks exactly one undo step (got {n1 - n0})")
+        ok(pg.evaluate("!window.__slipshop.ed.liquify"), "and closes the session")
+        pg.keyboard.press("Control+z")
+        ok(wait_for(pg, f"Math.abs((() => {{ const e=window.__slipshop.ed,d=e.doc; const px=e.active.surface.readRect({{x:0,y:0,w:d.w,h:d.h}}); let sx=0,m=0; for(let y=0;y<d.h;y++)for(let x=0;x<d.w;x++){{const v=px[(y*d.w+x)*4+3]; sx+=x*v; m+=v;}} return m>0?sx/m:-1; }})() - {before:.4f}) < 0.5"),
+           "undo takes the warp back off")
+        pg.keyboard.press("Control+Shift+z")
+        ok(wait_for(pg, f"(() => {{ const e=window.__slipshop.ed,d=e.doc; const px=e.active.surface.readRect({{x:0,y:0,w:d.w,h:d.h}}); let sx=0,m=0; for(let y=0;y<d.h;y++)for(let x=0;x<d.w;x++){{const v=px[(y*d.w+x)*4+3]; sx+=x*v; m+=v;}} return m>0?sx/m:-1; }})() > {before:.4f} + 4"),
+           "and redo puts it back")
+
+        # The freeze mask shows on the overlay and holds the pixels still.
+        pg.evaluate("""
+          const h = window.__slipshop;
+          h.opt.liquifyMode = 'freeze';
+          h.opt.liquifySize = 120;
+        """)
+        drag(pg, [(150, 110), (160, 110)], steps=4)
+        ok(wait_for(pg, "!!window.__slipshop.ed.liquify && [...window.__slipshop.ed.liquify.mesh.freeze].some(v => v > 0.1)"),
+           "the freeze brush marks the mesh")
+        shown = pg.evaluate("""(() => {
+          const ov = document.getElementById('overlay');
+          const g = ov.getContext('2d');
+          const d = g.getImageData(0, 0, ov.width, ov.height).data;
+          let red = 0;
+          for (let i = 0; i < d.length; i += 4) if (d[i] > 100 && d[i + 3] > 10) red++;
+          return red;
+        })()""")
+        ok(shown > 100, f"and the frozen area is shown in red on the overlay ({shown} pixels)")
+        frozen_before = bar_centroid()
+        pg.evaluate("window.__slipshop.opt.liquifyMode = 'push'")
+        drag(pg, [(150, 110), (230, 110)], steps=10)
+        frozen_after = bar_centroid()
+        ok(abs(frozen_after - frozen_before) < abs(after - before),
+           f"a frozen area resists the push ({frozen_before:.1f} -> {frozen_after:.1f})")
+        pg.evaluate("window.__slipshop.ed.commitLiquify()")
+
+        # Switching tool banks an open session rather than leaving a preview.
+        pg.evaluate("window.__slipshop.setTool('liquify'); window.__slipshop.opt.liquifyMode='bloat'")
+        drag(pg, [(150, 110), (152, 112)], steps=3)
+        ok(pg.evaluate("!!window.__slipshop.ed.liquify"), "bloat opens a session")
+        pg.evaluate("window.__slipshop.setTool('brush')")
+        ok(pg.evaluate("!window.__slipshop.ed.liquify"), "and leaving the tool banks it")
+
+        print("\n-- paths and shape layers --")
+        pg.evaluate("""
+          const e = window.__slipshop.ed;
+          e.newDocument(400, 300, { background: [1, 1, 1, 1] });
+          e.setFg([1, 0, 0]);
+          e.setBg([0, 0, 1]);
+        """)
+        # Draw a triangle with the pen, in document coordinates.
+        pg.evaluate("window.__slipshop.setTool('pen')")
+        for px, py in [(60, 60), (300, 60), (180, 240)]:
+            c = canvas_point(pg, px, py)
+            pg.mouse.click(c[0], c[1])
+        ok(wait_for(pg, "window.__slipshop.ed.doc.paths.length === 1"),
+           "three pen clicks make a Work Path")
+        ok(pg.evaluate("window.__slipshop.ed.activePath.path.subpaths[0].anchors.length") == 3,
+           "with three anchors")
+        # Clicking the first anchor again closes it.
+        c = canvas_point(pg, 60, 60)
+        pg.mouse.click(c[0], c[1])
+        ok(wait_for(pg, "window.__slipshop.ed.activePath.path.subpaths[0].closed === true"),
+           "clicking the first anchor closes the path")
+
+        # The overlay draws the path -- without it the pen is invisible.
+        drawn = pg.evaluate("""(() => {
+          const ov = document.getElementById('overlay');
+          const g = ov.getContext('2d');
+          const d = g.getImageData(0, 0, ov.width, ov.height).data;
+          let n = 0;
+          for (let i = 0; i < d.length; i += 4) if (d[i + 3] > 10) n++;
+          return n;
+        })()""")
+        ok(drawn > 200, f"the path overlay is drawn on the canvas ({drawn} pixels)")
+
+        # Fill the path onto the layer.
+        pid = pg.evaluate("window.__slipshop.ed.activePathId")
+        pg.evaluate(f"window.__slipshop.ed.paintPath({json.dumps(pid)}, 'fill')")
+        inside = pg.evaluate("window.__slipshop.pixel(180, 110)")
+        outside = pg.evaluate("window.__slipshop.pixel(70, 230)")
+        ok(inside[0] > 0.9 and inside[1] < 0.1, f"filling the path paints inside it {inside}")
+        ok(outside[1] > 0.9, f"and not outside it {outside}")
+        pg.keyboard.press("Control+z")
+        ok(wait_for(pg, "window.__slipshop.pixel(180,110)[1] > 0.9"), "undo removes the fill")
+
+        # Path -> selection, which must be the same region.
+        pg.evaluate(f"window.__slipshop.ed.pathToSelection({json.dumps(pid)}, 'new')")
+        ok(wait_for(pg, "window.__slipshop.stats().hasSelection"), "the path becomes a selection")
+        ok(pg.evaluate("""(() => {
+             const e = window.__slipshop.ed, d = e.doc;
+             const m = e.doc.selection.readRect({x:0,y:0,w:d.w,h:d.h});
+             return m[110 * d.w + 180] > 0.9 && m[230 * d.w + 70] < 0.1;
+           })()"""), "covering the inside of the triangle and not the outside")
+
+        # ...and back again: selection -> path -> the same selection.
+        before = pg.evaluate("""(() => {
+          const e = window.__slipshop.ed, d = e.doc;
+          const m = e.doc.selection.readRect({x:0,y:0,w:d.w,h:d.h});
+          let n = 0;
+          for (let i = 0; i < m.length; i++) n += m[i];
+          return n;
+        })()""")
+        pg.evaluate("window.__slipshop.ed.selectionToPath()")
+        n_paths = pg.evaluate("window.__slipshop.ed.doc.paths.length")
+        ok(n_paths == 2, f"the selection traces back to a path ({n_paths} paths)")
+        pg.evaluate("const e=window.__slipshop.ed; e.pathToSelection(e.activePathId, 'new')")
+        after = pg.evaluate("""(() => {
+          const e = window.__slipshop.ed, d = e.doc;
+          const m = e.doc.selection.readRect({x:0,y:0,w:d.w,h:d.h});
+          let n = 0;
+          for (let i = 0; i < m.length; i++) n += m[i];
+          return n;
+        })()""")
+        ok(abs(after - before) / before < 0.02,
+           f"and that path makes the same selection again ({before:.0f} -> {after:.0f})")
+        pg.keyboard.press("Control+d")
+
+        # A shape layer, dragged with the shape tool.
+        pg.evaluate("""
+          const h = window.__slipshop;
+          h.setTool('shape');
+          h.opt.shapeKind = 'star';
+          h.opt.shapeAsLayer = true;
+          h.opt.shapeFill = true;
+          h.opt.shapeStroke = false;
+        """)
+        drag(pg, [(100, 100), (300, 260)])
+        ok(wait_for(pg, "window.__slipshop.ed.active.type === 'shape'"),
+           "dragging the shape tool makes a shape layer")
+        ok(pg.evaluate("!!window.__slipshop.ed.active.shape.path"), "with a path on it")
+        star = pg.evaluate("window.__slipshop.pixel(200, 180)")
+        ok(star[0] > 0.9 and star[1] < 0.2, f"and it is painted in the foreground colour {star}")
+
+        # The shape stays editable: change the point count and the pixels move.
+        def shape_ink():
+            return pg.evaluate("""(() => {
+              const e = window.__slipshop.ed, d = e.doc;
+              const px = e.active.surface.readRect({x:0,y:0,w:d.w,h:d.h});
+              let n = 0;
+              for (let i = 0; i < d.w * d.h; i++) if (px[i*4+3] > 0.5) n++;
+              return n;
+            })()""")
+        five = shape_ink()
+        pg.evaluate("const e=window.__slipshop.ed; e.setShape(e.activeId, { params: { ...e.active.shape.params, points: 12 } })")
+        twelve = shape_ink()
+        ok(twelve != five, f"editing the point count redraws the shape ({five} -> {twelve} pixels)")
+        # A stroke in the background colour appears outside the fill.
+        pg.evaluate("const e=window.__slipshop.ed; e.setShape(e.activeId, { strokeEnabled: true, stroke: [0,0,1], strokeWidth: 6 })")
+        ok(wait_for(pg, "window.__slipshop.ed.active.shape.strokeEnabled === true"), "a stroke can be switched on")
+        ok(shape_ink() > twelve, "and it adds ink outside the fill")
+
+        # Painting on a shape layer rasterises it, as on a text layer.
+        pg.evaluate("window.__slipshop.setTool('brush'); window.__slipshop.ed.setFg([0,1,0]); window.__slipshop.ed.brush.size = 30")
+        drag(pg, [(60, 280), (340, 280)])
+        ok(wait_for(pg, "window.__slipshop.ed.active.type === 'raster'"),
+           "painting on a shape layer rasterises it")
+        ok(pg.evaluate("!window.__slipshop.ed.active.shape"), "and drops its spec")
+
+        # The Paths panel is real UI.
+        ok(pg.evaluate("document.querySelectorAll('.sp-path-row').length") >= 2,
+           "the Paths panel lists the saved paths")
+        pg.evaluate("document.querySelectorAll('.sp-path-row')[0].click()")
+        ok(pg.evaluate("!!window.__slipshop.ed.activePathId"), "and clicking one selects it")
 
         print("\n-- re-editable text --")
         pg.evaluate("""

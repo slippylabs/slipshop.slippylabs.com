@@ -6,7 +6,7 @@
 // thing that must survive a re-render is which panels are open, which ui.js
 // remembers by title.
 
-import { el, panel, row, btn, slider, number, select, selectGroups, checkbox, text, colorInput, toast, hint, setChildren, modal } from './ui.js';
+import { el, panel, row, btn, slider, number, select, selectGroups, checkbox, text, colorInput, toast, hint, setChildren, modal, download } from './ui.js';
 import { MODE_GROUPS } from '../core/blend.js';
 import { TOOLS, TOOL_BY_ID, isPaintTool, isSelectTool } from './tools.js';
 import { GRADIENT_SHAPES } from '../core/gradient.js';
@@ -16,6 +16,12 @@ import { compositeDoc } from '../core/composite.js';
 import { applyAdjust } from '../core/adjust.js';
 import { EFFECT_TYPES, EFFECT_FIELDS, EFFECT_LABELS, effectDefaults } from '../core/effects.js';
 import { TEXT_FIELDS, WARP_STYLES, WARP_FIELDS, warpDefaults, bendRange, textDefaults } from '../core/text.js';
+import {
+  countAnchors, clonePath, reversePath, parseSvgPath, pathToSvgDocument,
+  CAPS, JOINS, SHAPE_FIELDS, SHAPES,
+} from '../core/path.js';
+import { shapeDefaults, SHAPE_STYLE_FIELDS } from '../core/shape.js';
+import { LIQUIFY_TOOLS, LIQUIFY_LABELS } from '../core/liquify.js';
 import { resize } from '../core/resample.js';
 
 const BLEND_GROUPS = MODE_GROUPS.map(([g, list]) => [g, list.map((m) => [m, prettyMode(m)])]);
@@ -23,12 +29,20 @@ function prettyMode(m) {
   return m.split('-').map((w) => w[0].toUpperCase() + w.slice(1)).join(' ');
 }
 
+/** The live tool-options object. The path and shape panels read the pen's
+ *  width and cap from it, and they are rebuilt on every event, so stashing it
+ *  here is simpler than threading it through four signatures. */
+let opt0 = null;
+
 export function renderDock(ed, view, opt, dock) {
+  opt0 = opt;
   setChildren(dock,
     toolOptionsPanel(ed, view, opt),
     colourPanel(ed),
     brushPanel(ed, opt),
     layersPanel(ed, view),
+    shapePanel(ed),
+    pathsPanel(ed),
     textPanel(ed),
     effectsPanel(ed),
     historyPanel(ed),
@@ -77,6 +91,30 @@ function toolOptionsPanel(ed, view, opt) {
     body.push(row('', checkbox({ get: () => opt.gradientReverse, label: 'Reverse', onCommit: (v) => { opt.gradientReverse = v; } })));
     body.push(row('', checkbox({ get: () => opt.gradientDither, label: 'Dither', onCommit: (v) => { opt.gradientDither = v; } })));
   }
+  if (ed.tool === 'liquify') {
+    body.push(row('Mode', select({
+      get: () => opt.liquifyMode,
+      options: LIQUIFY_TOOLS.map((t) => [t, LIQUIFY_LABELS[t]]),
+      onCommit: (v) => { opt.liquifyMode = v; },
+    })));
+    body.push(row('Size', slider({
+      get: () => opt.liquifySize, min: 8, max: 1200, step: 1,
+      onCommit: (v) => { opt.liquifySize = v; },
+    })));
+    body.push(row('Strength', slider({
+      get: () => opt.liquifyStrength, min: 0.02, max: 1, step: 0.01,
+      onCommit: (v) => { opt.liquifyStrength = v; },
+    })));
+    body.push(el('div', { class: 'sp-btn-row' },
+      btn('Apply', () => {
+        if (ed.commitLiquify()) toast('Liquify applied');
+        else toast('Nothing to apply');
+      }, { title: 'Bank the warp as one undo step' }),
+      btn('Reset', () => ed.resetLiquify(), { title: 'Throw the warp away and start again' })));
+    body.push(el('p', { class: 'sp-note', text: ed.liquify
+      ? 'Warping. Strokes accumulate in one mesh, so the image is only resampled once from the original however many you make. Freeze protects an area; Reconstruct eases it back.'
+      : 'Drag on the canvas to push pixels around. The warp is held as a mesh until you press Apply, so nothing is resampled twice.' }));
+  }
   if (ed.tool === 'shape') {
     body.push(row('Shape', select({
       get: () => opt.shapeKind, options: [['rect', 'Rectangle'], ['ellipse', 'Ellipse']],
@@ -99,6 +137,63 @@ function toolOptionsPanel(ed, view, opt) {
     body.push(row('', checkbox({ get: () => opt.cloneAligned, label: 'Aligned', onCommit: (v) => { opt.cloneAligned = v; } })));
     body.push(row('', checkbox({ get: () => opt.sampleAll, label: 'Sample all layers', onCommit: (v) => { opt.sampleAll = v; } })));
     body.push(el('p', { class: 'sp-note', text: ed.cloneSource ? `Source: ${Math.round(ed.cloneSource[0])}, ${Math.round(ed.cloneSource[1])}` : 'Alt-click to set the source.' }));
+  }
+  if (ed.tool === 'liquify') {
+    body.push(row('Mode', select({
+      get: () => opt.liquifyMode,
+      options: LIQUIFY_TOOLS.map((t) => [t, LIQUIFY_LABELS[t]]),
+      onCommit: (v) => { opt.liquifyMode = v; },
+    })));
+    body.push(row('Size', slider({
+      get: () => opt.liquifySize, min: 8, max: 1200, step: 1,
+      onCommit: (v) => { opt.liquifySize = v; },
+    })));
+    body.push(row('Strength', slider({
+      get: () => opt.liquifyStrength, min: 0.02, max: 1, step: 0.01,
+      onCommit: (v) => { opt.liquifyStrength = v; },
+    })));
+    body.push(el('div', { class: 'sp-btn-row' },
+      btn('Apply', () => {
+        if (ed.commitLiquify()) toast('Liquify applied');
+        else toast('Nothing to apply');
+      }, { title: 'Bank the warp as one undo step' }),
+      btn('Reset', () => ed.resetLiquify(), { title: 'Throw the warp away and start again' })));
+    body.push(el('p', { class: 'sp-note', text: ed.liquify
+      ? 'Warping. Strokes accumulate in one mesh, so the image is only resampled once from the original however many you make. Freeze protects an area; Reconstruct eases it back.'
+      : 'Drag on the canvas to push pixels around. The warp is held as a mesh until you press Apply, so nothing is resampled twice.' }));
+  }
+  if (ed.tool === 'shape') {
+    body.push(row('Shape', select({
+      get: () => opt.shapeKind,
+      options: SHAPES.map((k) => [k, k.replace(/([A-Z])/g, ' $1').replace(/^./, (c) => c.toUpperCase())]),
+      onCommit: (v) => { opt.shapeKind = v; rerender(); },
+    })));
+    for (const [label, key, , min, max, step] of (SHAPE_FIELDS[opt.shapeKind] || [])) {
+      const optKey = { radius: 'shapeRadius', sides: 'shapeSides', points: 'shapePoints', innerRatio: 'shapeInner', head: 'shapeHead' }[key];
+      if (!optKey) continue;
+      body.push(row(label, slider({
+        get: () => opt[optKey], min, max, step, onCommit: (v) => { opt[optKey] = v; },
+      })));
+    }
+    body.push(row('', checkbox({
+      get: () => opt.shapeAsLayer, label: 'As a shape layer (editable)',
+      onCommit: (v) => { opt.shapeAsLayer = v; },
+    })));
+    body.push(row('', checkbox({ get: () => opt.shapeFill, label: 'Fill (foreground)', onCommit: (v) => { opt.shapeFill = v; } })));
+    body.push(row('', checkbox({ get: () => opt.shapeStroke, label: 'Stroke (background)', onCommit: (v) => { opt.shapeStroke = v; rerender(); } })));
+    if (opt.shapeStroke) {
+      body.push(row('Stroke width', slider({
+        get: () => opt.shapeStrokeWidth, min: 0.25, max: 100, step: 0.25,
+        onCommit: (v) => { opt.shapeStrokeWidth = v; },
+      })));
+    }
+    body.push(el('p', { class: 'sp-note', text: 'Drag on the canvas. Shift keeps it square. A shape layer stays editable: its path, fill and stroke live in the Shape panel.' }));
+  }
+  if (ed.tool === 'pen') {
+    body.push(el('p', { class: 'sp-note', text: 'Click for a corner anchor, drag for a curve. Click the first anchor to close the path, or the last one to leave it open. Fill, stroke and selection are in the Paths panel.' }));
+  }
+  if (ed.tool === 'node') {
+    body.push(el('p', { class: 'sp-note', text: 'Drag an anchor or a handle. Shift breaks a handle pair into a cusp; Alt on an anchor retracts its handles; Alt on the curve inserts an anchor without changing the shape.' }));
   }
   if (ed.tool === 'text') {
     body.push(row('Text', text({ get: () => opt.text, onCommit: (v) => { opt.text = v; } }), { wide: true }));
@@ -319,6 +414,149 @@ function layersPanel(ed, view) {
       l && l.mask ? btn('Apply mask', () => ed.removeMask(ed.activeId, { apply: true })) : null,
       btn('Group', () => ed.groupSelected()),
       btn('Merge down', () => ed.mergeDown())));
+}
+
+// -------------------------------------------------------------------- paths
+
+function pathsPanel(ed) {
+  const list = (ed.doc.paths || []);
+  const rows = list.map((p) => el('div', {
+    class: `sp-path-row${p.id === ed.activePathId ? ' sel' : ''}`,
+    onclick: () => { ed.activePathId = p.id; ed.emit('paths'); },
+  },
+    el('span', { class: 'sp-path-name', text: `${p.name} (${countAnchors(p.path)})` }),
+    el('button', {
+      class: 'sp-fx-x', text: '×', title: 'Delete this path',
+      onclick: (e) => { e.stopPropagation(); ed.removePath(p.id); },
+    })));
+
+  const active = ed.activePath;
+  const body = [];
+  if (!list.length) {
+    body.push(hintRow('Draw with the Pen (P): click for a corner, drag for a curve, click the first anchor to close. Nothing is rasterised until you ask.'));
+  } else {
+    body.push(el('div', { class: 'sp-path-list' }, ...rows));
+  }
+
+  if (active) {
+    body.push(row('Name', text({ get: () => active.name, onCommit: (v) => ed.renamePath(active.id, v) })));
+    body.push(row('Stroke width', slider({
+      get: () => opt0.penStrokeWidth, min: 0.25, max: 100, step: 0.25,
+      onCommit: (v) => { opt0.penStrokeWidth = v; },
+    })));
+    body.push(row('Cap', select({
+      get: () => opt0.penCap, options: CAPS.map((c) => [c, c[0].toUpperCase() + c.slice(1)]),
+      onCommit: (v) => { opt0.penCap = v; },
+    })));
+    body.push(row('Join', select({
+      get: () => opt0.penJoin, options: JOINS.map((c) => [c, c[0].toUpperCase() + c.slice(1)]),
+      onCommit: (v) => { opt0.penJoin = v; },
+    })));
+    body.push(row('', checkbox({
+      get: () => opt0.pathEvenOdd, label: 'Even-odd fill',
+      onCommit: (v) => { opt0.pathEvenOdd = v; },
+    })));
+    body.push(el('div', { class: 'sp-btn-row' },
+      btn('Fill', () => {
+        if (!ed.paintPath(active.id, 'fill', { evenOdd: opt0.pathEvenOdd })) toast('Nothing to fill', { bad: true });
+      }, { title: 'Fill the path onto the current layer with the foreground colour' }),
+      btn('Stroke', () => {
+        if (!ed.paintPath(active.id, 'stroke', {
+          width: opt0.penStrokeWidth, cap: opt0.penCap, join: opt0.penJoin,
+        })) toast('Nothing to stroke', { bad: true });
+      }, { title: 'Stroke the path onto the current layer' }),
+      btn('Shape layer', () => {
+        ed.addShapeLayer({
+          kind: 'custom', path: clonePath(active.path),
+          fill: [...ed.fg], fillEnabled: true,
+          stroke: [...ed.bg], strokeEnabled: false,
+          strokeWidth: opt0.penStrokeWidth, cap: opt0.penCap, join: opt0.penJoin,
+          evenOdd: opt0.pathEvenOdd,
+        });
+      }, { title: 'A re-editable shape layer from this path' })));
+    body.push(el('div', { class: 'sp-btn-row' },
+      btn('Selection', () => {
+        if (!ed.pathToSelection(active.id, 'new', { evenOdd: opt0.pathEvenOdd })) toast('That path encloses nothing', { bad: true });
+      }, { title: 'Turn the path into a selection' }),
+      btn('Export SVG', () => {
+        download(`${(active.name || 'path').replace(/\W+/g, '-')}.svg`,
+          pathToSvgDocument(active.path, ed.doc.w, ed.doc.h, { stroke: toHex(ed.fg), width: opt0.penStrokeWidth }),
+          'image/svg+xml');
+      }),
+      btn('Reverse', () => ed.setPathGeometry(active.id, reversePath(active.path), { label: 'Reverse path' }),
+        { title: 'Flip the winding, which turns a hole into a solid' })));
+  }
+
+  body.push(el('div', { class: 'sp-btn-row' },
+    btn('From selection', () => {
+      if (!ed.selectionToPath()) toast('There is no selection', { bad: true });
+    }, { title: 'Trace the selection as a path' }),
+    btn('Import SVG', async () => {
+      const area = el('textarea', {
+        class: 'sp-textarea', rows: 4, spellcheck: 'false',
+        placeholder: 'M 10 10 C 40 0 80 40 90 90 Z',
+      });
+      const body = el('div', {},
+        el('p', { class: 'sp-note', text: 'Paste the d attribute of an SVG <path>, or a whole <svg> with one in it. Arcs are skipped; everything else comes through as cubics.' }),
+        area);
+      if (!await modal('Import SVG path', body)) return;
+      const d = area.value.trim();
+      if (!d) return;
+      const m = String(d).match(/\bd\s*=\s*"([^"]+)"/);
+      const parsed = parseSvgPath(m ? m[1] : d);
+      if (!countAnchors(parsed)) { toast('No path found in that', { bad: true }); return; }
+      ed.addPath(parsed, 'Imported');
+    })));
+
+  return panel('Paths', { open: list.length > 0, note: list.length ? `${list.length}` : undefined }, ...body);
+}
+
+// ------------------------------------------------------------------- shapes
+
+function shapePanel(ed) {
+  const l = ed.active;
+  if (!l || !l.shape) {
+    return panel('Shape', { open: false },
+      hintRow('Drag with the Shape tool (U) to make a shape layer. Its path, fill and stroke stay editable; drag its anchors with Direct Select (A).'));
+  }
+  const sh = { ...shapeDefaults(), ...l.shape };
+  const set = (patch, live = false) => ed.setShape(l.id, patch, { live });
+  const body = [];
+  for (const [label, key, kind, ...rest] of SHAPE_STYLE_FIELDS) {
+    if (kind === 'num') {
+      const [min, max, step] = rest;
+      body.push(row(label, slider({
+        get: () => sh[key], min, max, step,
+        onInput: (v) => set({ [key]: v }, true),
+        onCommit: (v) => { set({ [key]: v }, true); ed.commitProp(); },
+      })));
+    } else if (kind === 'bool') {
+      body.push(row('', checkbox({ get: () => !!sh[key], label, onCommit: (v) => set({ [key]: v }) })));
+    } else if (kind === 'sel') {
+      body.push(row(label, select({
+        get: () => sh[key], options: rest[0].map((v) => [v, v[0].toUpperCase() + v.slice(1)]),
+        onCommit: (v) => set({ [key]: v }),
+      })));
+    } else if (kind === 'col') {
+      body.push(row(label, colorInput({
+        get: () => toHex(sh[key]),
+        onCommit: (hex) => { const c = parseHex(hex); if (c) set({ [key]: c.slice(0, 3) }); },
+      })));
+    }
+  }
+  // The parametric dials, for the shapes that have any. A custom path has
+  // none -- it is no longer a parameterised shape once you have moved an
+  // anchor, and pretending otherwise would overwrite the edit.
+  for (const [label, key, , min, max, step] of (SHAPE_FIELDS[sh.kind] || [])) {
+    body.push(row(label, slider({
+      get: () => (sh.params || {})[key], min, max, step,
+      onCommit: (v) => set({ params: { ...(sh.params || {}), [key]: v } }),
+    })));
+  }
+  body.push(el('div', { class: 'sp-btn-row' },
+    btn('To path', () => ed.addPath(l.shape.path, l.name), { title: 'Copy its outline into the Paths panel' }),
+    btn('Rasterise', () => { ed.rasterizeShape(l.id); toast('Shape rasterised'); })));
+  return panel('Shape', { open: true, note: sh.kind }, ...body);
 }
 
 // -------------------------------------------------------------------- text

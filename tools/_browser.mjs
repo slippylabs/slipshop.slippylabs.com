@@ -8,9 +8,10 @@
 //     synchronous is fine, and everything here is synchronous.
 //   * the page must set its own completion flag; readyState is not enough.
 
-import { writeFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { writeFileSync, mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
+import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 
 const SHELL = '/usr/lib/chromium/chromium-headless-shell';
@@ -44,3 +45,30 @@ document.getElementById('o').textContent = window.__out;
 
 /** Decode a base64 payload the page produced. */
 export function b64bytes(s) { return new Uint8Array(Buffer.from(s, 'base64')); }
+
+/**
+ * The same, but cached by the content of the snippet.
+ *
+ * The result of asking Chromium what its canvas does depends only on the
+ * snippet, not on any of our code, so it is a REFERENCE and caching it is no
+ * different from checking a reference table into the repo. It matters because
+ * controls.sh runs an oracle once per mutation -- two hundred times -- and a
+ * headless browser launch is most of a minute of that.
+ *
+ * Keyed on a hash of the snippet, so changing a single case invalidates it,
+ * and kept in the system temp directory rather than the repo, so a fresh
+ * checkout still asks the real browser once.
+ */
+export function runInBrowserCached(body, opts = {}) {
+  const key = createHash('sha256').update(body).digest('hex').slice(0, 32);
+  const file = join(tmpdir(), `slipshop-ref-${key}.txt`);
+  if (existsSync(file)) {
+    try {
+      const cached = readFileSync(file, 'utf8');
+      if (cached.length) return cached;
+    } catch (e) { /* fall through and ask the browser */ }
+  }
+  const out = runInBrowser(body, opts);
+  try { writeFileSync(file, out); } catch (e) { /* a cache miss is not a failure */ }
+  return out;
+}

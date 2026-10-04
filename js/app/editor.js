@@ -14,6 +14,12 @@ import { Doc, Layer, newDoc, validate } from '../core/doc.js';
 import { History, edit as guardedEdit } from '../core/history.js';
 import { textDefaults } from '../core/text.js';
 import { renderTextLayer } from './textlayer.js';
+import {
+  newPath, clonePath, pathFromContours, fillCoverage, strokeCoverage,
+  shapePath, pathBounds,
+} from '../core/path.js';
+import { shapeDefaults, renderShape, shapeBounds } from '../core/shape.js';
+import { Mesh, applyBrush, warpBuffer, warpSourceRect, DEFAULT_STEP } from '../core/liquify.js';
 import { compositeDoc } from '../core/composite.js';
 import { Surface } from '../core/tiles.js';
 import { applyAdjust } from '../core/adjust.js';
@@ -29,6 +35,10 @@ export class Editor {
     this.activeId = this.doc.layers[0].id;
     /** The layer mask is edited instead of the pixels when this is on. */
     this.editingMask = false;
+    /** Which saved path the pen tool draws into and the overlay shows. */
+    this.activePathId = null;
+    /** The live liquify session: the original pixels plus a mesh. */
+    this.liquify = null;
     this.tool = 'brush';
     this.fg = [0, 0, 0];
     this.bg = [1, 1, 1];
@@ -67,6 +77,10 @@ export class Editor {
 
   setActive(id) {
     if (this.activeId === id) return;
+    // Bank an open liquify session before the layer changes: it holds the
+    // ORIGINAL pixels of the layer it started on, and applying it to a
+    // different one would overwrite that layer with a warp of another.
+    if (this.liquify) this.commitLiquify();
     this.activeId = id;
     this.editingMask = false;
     this.emit('layers');
@@ -302,6 +316,7 @@ export class Editor {
     this.doc = newDoc(w, h, opts);
     this.history.clear();
     this.activeId = this.doc.layers[0].id;
+    this.activePathId = null;
     this.editingMask = false;
     this.antsVersion++;
     this.zoom = 1;
@@ -315,6 +330,7 @@ export class Editor {
     this.doc = doc;
     this.history.clear();
     this.activeId = doc.layers[doc.layers.length - 1].id;
+    this.activePathId = (doc.paths && doc.paths.length) ? doc.paths[0].id : null;
     this.editingMask = false;
     this.antsVersion++;
     this.emit('doc');
@@ -406,22 +422,332 @@ export class Editor {
    */
   rasterizeForPaint() {
     const l = this.active;
-    if (!l || !l.text || this.editingMask) return false;
-    const name = l.name;
-    this.rasterizeText(l.id, { silent: true });
-    this.lastRasterised = name;
+    if (!l || this.editingMask) return false;
+    if (!l.text && !l.shape) return false;
+    if (l.text) this.rasterizeText(l.id, { silent: true });
+    else this.rasterizeShape(l.id);
     return true;
   }
 
   rasterizeText(id = this.activeId, { silent = false } = {}) {
     const l = this.doc.find(id);
     if (!l || !l.text) return false;
+    // Recorded here rather than only in rasterizeForPaint: the Text panel's
+    // own Rasterise button comes straight in, and the hint that follows the
+    // event would otherwise name whatever was rasterised last time.
+    this.lastRasterised = l.name;
     this.history.begin('Rasterise text', this.doc);
     l.text = null;
     l.type = 'raster';
     this.history.commit();
     this.emit('layers');
     if (!silent) this.emit('rasterised');
+    return true;
+  }
+
+  // --------------------------------------------------------------- paths
+
+  get activePath() {
+    return (this.doc.paths || []).find((p) => p.id === this.activePathId) || null;
+  }
+
+  /** The path the pen tool draws into, created on first use. Photoshop calls
+   *  it the Work Path and so does this; naming it is what SAVES it. */
+  ensureWorkPath() {
+    let p = this.activePath;
+    if (p) return p;
+    p = { id: `path-${++pathSeq}`, name: 'Work Path', path: newPath() };
+    this.history.begin('New path', this.doc);
+    this.doc.paths.push(p);
+    this.history.commit();
+    this.activePathId = p.id;
+    this.emit('paths');
+    return p;
+  }
+
+  addPath(path, name = 'Path') {
+    this.history.begin('New path', this.doc);
+    const p = { id: `path-${++pathSeq}`, name, path: clonePath(path) };
+    this.doc.paths.push(p);
+    this.history.commit();
+    this.activePathId = p.id;
+    this.invalidate();
+    this.emit('paths');
+    return p;
+  }
+
+  setPathGeometry(id, path, { live = false, label = 'Edit path' } = {}) {
+    const p = (this.doc.paths || []).find((q) => q.id === id);
+    if (!p) return;
+    this.history.begin(label, this.doc);
+    p.path = clonePath(path);
+    if (!live) this.history.commit();
+    this.emit('paths');
+  }
+
+  renamePath(id, name) {
+    const p = (this.doc.paths || []).find((q) => q.id === id);
+    if (!p) return;
+    this.history.begin('Rename path', this.doc);
+    p.name = name || 'Path';
+    this.history.commit();
+    this.emit('paths');
+  }
+
+  removePath(id = this.activePathId) {
+    const i = (this.doc.paths || []).findIndex((q) => q.id === id);
+    if (i < 0) return;
+    this.history.begin('Delete path', this.doc);
+    this.doc.paths.splice(i, 1);
+    this.history.commit();
+    if (this.activePathId === id) {
+      this.activePathId = this.doc.paths.length ? this.doc.paths[Math.min(i, this.doc.paths.length - 1)].id : null;
+    }
+    this.emit('paths');
+  }
+
+  /** Paint a path's fill or stroke onto the active pixel layer. */
+  paintPath(id = this.activePathId, mode = 'fill', opts = {}) {
+    const p = (this.doc.paths || []).find((q) => q.id === id);
+    if (!p) return false;
+    if (this.rasterizeForPaint()) this.emit('rasterised');
+    const surface = this.target;
+    if (!surface || (this.active && this.active.locked)) return false;
+    const out = mode === 'stroke'
+      ? strokeCoverage(p.path, {
+        width: opts.width || 2, cap: opts.cap || 'round', join: opts.join || 'miter',
+        miterLimit: opts.miterLimit || 10, dash: opts.dash || null,
+      })
+      : fillCoverage(p.path, { evenOdd: !!opts.evenOdd });
+    if (!out.cov.length) return false;
+    const r = rectIntersect(out.r, this.doc.bounds);
+    if (rectEmpty(r)) return false;
+    const colour = opts.color || this.fg;
+    this.editTarget(mode === 'stroke' ? 'Stroke path' : 'Fill path', r, () => {
+      const dst = surface.readRect(r);
+      const sel = this.selection ? this.selection.readRect(r) : null;
+      for (let y = 0; y < r.h; y++) {
+        for (let x = 0; x < r.w; x++) {
+          const i = y * r.w + x;
+          const si = (r.y + y - out.r.y) * out.r.w + (r.x + x - out.r.x);
+          let a = out.cov[si];
+          if (sel) a *= sel[i];
+          if (a <= 0) continue;
+          if (surface.channels === 1) { dst[i] = dst[i] + (1 - dst[i]) * a; continue; }
+          const q = i * 4;
+          const ab = dst[q + 3];
+          const ao = a + ab * (1 - a);
+          for (let c = 0; c < 3; c++) dst[q + c] = (colour[c] * a + dst[q + c] * ab * (1 - a)) / ao;
+          dst[q + 3] = ao;
+        }
+      }
+      surface.writeRect(r, dst);
+    });
+    return true;
+  }
+
+  /** A path becomes a selection. */
+  pathToSelection(id = this.activePathId, mode = 'new', { evenOdd = false } = {}) {
+    const p = (this.doc.paths || []).find((q) => q.id === id);
+    if (!p) return false;
+    const out = fillCoverage(p.path, { evenOdd });
+    if (!out.cov.length) return false;
+    const r = this.doc.bounds;
+    const buf = new Float32Array(r.w * r.h);
+    for (let y = 0; y < out.r.h; y++) {
+      const dy = out.r.y + y;
+      if (dy < 0 || dy >= r.h) continue;
+      for (let x = 0; x < out.r.w; x++) {
+        const dx = out.r.x + x;
+        if (dx < 0 || dx >= r.w) continue;
+        buf[dy * r.w + dx] = out.cov[y * out.r.w + x];
+      }
+    }
+    this.history.begin('Path to selection', this.doc);
+    const prev = this.doc.selection ? this.doc.selection.readRect(r) : null;
+    const sel = this.doc.newSurface(1);
+    if (prev && mode !== 'new') {
+      for (let i = 0; i < buf.length; i++) {
+        const a = prev[i], b = buf[i];
+        buf[i] = mode === 'add' ? Math.min(1, a + b)
+          : mode === 'subtract' ? Math.max(0, a - b)
+            : mode === 'intersect' ? a * b
+              : Math.abs(a - b);
+      }
+    }
+    sel.writeRect(r, buf);
+    this.doc.selection = sel;
+    this.history.commit();
+    this.antsVersion++;
+    this.emit('selection');
+    return true;
+  }
+
+  /** ...and a selection becomes a path. The crack contours are axis-aligned,
+   *  so the path reproduces the mask exactly rather than smoothing it. */
+  selectionToPath(name = 'Selection path') {
+    if (!this.doc.selection) return null;
+    const contours = marchingAnts(this.doc.selection);
+    if (!contours.length) return null;
+    return this.addPath(pathFromContours(contours), name);
+  }
+
+  // --------------------------------------------------------------- shapes
+
+  addShapeLayer(shape) {
+    this.history.begin('Shape layer', this.doc);
+    const loc = this.doc.locate(this.activeId);
+    const spec = { ...shapeDefaults(), fill: [...this.fg], ...shape };
+    const l = new Layer({
+      type: 'shape',
+      name: (spec.kind || 'Shape').replace(/^./, (c) => c.toUpperCase()),
+      surface: this.doc.newSurface(4),
+      shape: spec,
+    });
+    const list = loc ? loc.list : this.doc.layers;
+    list.splice(loc ? loc.index + 1 : list.length, 0, l);
+    this.renderShapeLayer(l);
+    this.history.commit();
+    this.activeId = l.id;
+    this.invalidate();
+    this.emit('layers');
+    return l;
+  }
+
+  /** Redraw a shape layer's surface from its spec. Clears the WHOLE surface
+   *  first, for the same reason a text layer does: the shape may have shrunk,
+   *  and the tail of the old render is not part of the new one. */
+  renderShapeLayer(l) {
+    if (!l.shape || !l.surface) return null;
+    l.surface.clearRect(this.doc.bounds);
+    const r = rectIntersect(shapeBounds(l.shape), this.doc.bounds);
+    if (rectEmpty(r)) return null;
+    l.surface.writeRect(r, renderShape(l.shape, r));
+    return r;
+  }
+
+  setShape(id, patch, { live = false } = {}) {
+    const l = this.doc.find(id);
+    if (!l || !l.shape || !l.surface) return;
+    this.history.begin('Edit shape', this.doc);
+    this.history.touch(l.surface, this.doc.bounds);
+    l.shape = { ...l.shape, ...patch };
+    if (patch.kind || patch.params || patch.box) {
+      const box = patch.box || l.shape.box;
+      if (box) l.shape.path = shapePath(l.shape.kind, box, l.shape.params || {});
+    }
+    this.renderShapeLayer(l);
+    if (!live) this.history.commit();
+    this.invalidate();
+    this.emit('layers');
+  }
+
+  rasterizeShape(id = this.activeId) {
+    const l = this.doc.find(id);
+    if (!l || !l.shape) return false;
+    this.lastRasterised = l.name;
+    this.history.begin('Rasterise shape', this.doc);
+    l.shape = null;
+    l.type = 'raster';
+    this.history.commit();
+    this.emit('layers');
+    return true;
+  }
+
+  // -------------------------------------------------------------- liquify
+
+  /**
+   * Start a liquify session on the active layer.
+   *
+   * The session holds the layer's ORIGINAL pixels and a mesh. Every dab goes
+   * into the mesh and the layer is re-rendered from the original each time --
+   * never from the previous render. That is the whole quality argument for
+   * doing it this way: resampling the pixels once per stroke would soften the
+   * image a little every time, and fifty strokes into a portrait the
+   * difference is obvious. Accumulating in the mesh costs one resample from
+   * the untouched original however many strokes have gone before.
+   */
+  beginLiquify() {
+    const l = this.active;
+    if (!l) return null;
+    if (this.liquify && this.liquify.layerId === l.id) return this.liquify;
+    this.commitLiquify();
+    if (this.rasterizeForPaint()) this.emit('rasterised');
+    const surface = this.target;
+    if (!surface || surface.channels !== 4 || l.locked) return null;
+    this.liquify = {
+      layerId: l.id,
+      surface,
+      original: surface.clone(),
+      mesh: new Mesh(this.doc.w, this.doc.h, DEFAULT_STEP),
+      dirty: false,
+    };
+    this.emit('liquify');
+    return this.liquify;
+  }
+
+  /** One brush dab, then a re-render from the original. */
+  liquifyDab(tool, p) {
+    const s = this.beginLiquify();
+    if (!s) return false;
+    if (!applyBrush(s.mesh, tool, p)) return false;
+    if (tool === 'freeze' || tool === 'thaw') { s.dirty = true; this.emit('liquify'); return true; }
+    s.dirty = true;
+    this.renderLiquify();
+    return true;
+  }
+
+  renderLiquify() {
+    const s = this.liquify;
+    if (!s) return;
+    const dr = this.doc.bounds;
+    const sr = warpSourceRect(dr, s.mesh);
+    const src = s.original.readRect(sr);
+    s.surface.clearRect(dr);
+    s.surface.writeRect(dr, warpBuffer(src, sr, dr, s.mesh));
+    this.invalidate(dr);
+    this.emit('liquify');
+  }
+
+  /** Throw the warp away and put the layer back as it was. */
+  resetLiquify() {
+    const s = this.liquify;
+    if (!s) return;
+    s.mesh.reset();
+    this.renderLiquify();
+  }
+
+  /** Bank the warp as one undo step. */
+  commitLiquify() {
+    const s = this.liquify;
+    this.liquify = null;
+    if (!s) return false;
+    if (!s.dirty || s.mesh.isIdentity) {
+      // Nothing happened, or the mesh was reset back to nothing. Put the
+      // original pixels back and push NO undo entry: an undo step that does
+      // nothing is its own bug.
+      s.surface.tiles.clear();
+      for (const [k, t] of s.original.tiles) s.surface.tiles.set(k, t);
+      this.invalidate();
+      this.emit('liquify');
+      return false;
+    }
+    // The history has to be handed the state BEFORE the warp, and the warp is
+    // already live in the surface -- so swap the original back in, record it,
+    // then re-render. Recording the live pixels instead would make undo a
+    // no-op, which is the same shape of bug the filter dialogs hit.
+    const warped = new Map();
+    for (const [k, t] of s.surface.tiles) warped.set(k, t);
+    s.surface.tiles.clear();
+    for (const [k, t] of s.original.tiles) s.surface.tiles.set(k, t);
+    this.history.begin('Liquify', null);
+    this.history.touch(s.surface, this.doc.bounds);
+    s.surface.tiles.clear();
+    for (const [k, t] of warped) s.surface.tiles.set(k, t);
+    this.history.commit();
+    this.invalidate();
+    this.emit('history');
+    this.emit('liquify');
     return true;
   }
 
@@ -433,6 +759,8 @@ export class Editor {
     this.emit('history');
   }
 }
+
+let pathSeq = 0;
 
 /** A layer name from its text: the first line, trimmed to something that fits
  *  the panel, so a text layer is recognisable without opening it. */

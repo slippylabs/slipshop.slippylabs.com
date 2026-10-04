@@ -156,6 +156,7 @@ export function saveProject(doc) {
     name: doc.name,
     tile: TILE,
     guides: doc.guides,
+    paths: doc.paths || [],
     layers: doc.layers.map((l) => layerHeader(l, blocks)),
     selection: surfaceHeader(doc.selection, blocks),
   };
@@ -234,6 +235,7 @@ export function loadProject(bytes) {
     return l;
   };
 
+  doc.paths = Array.isArray(header.paths) ? header.paths : [];
   doc.layers = header.layers.map(readLayer);
   doc.selection = readSurface(header.selection);
   if (!doc.layers.length) throw new Error('the file contains no layers');

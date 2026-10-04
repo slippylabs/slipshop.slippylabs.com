@@ -55,6 +55,27 @@ function cloneEffect(e) {
   return o;
 }
 
+/**
+ * The document's saved paths, copied right down to the anchors.
+ *
+ * Paths are small -- tens of anchors, not megabytes of pixels -- so there is
+ * nothing to gain from sharing any of it, and sharing the anchor objects would
+ * mean dragging a handle rewrote the undo entry that was supposed to put it
+ * back.
+ */
+function snapPaths(paths) {
+  return (paths || []).map((p) => ({
+    id: p.id,
+    name: p.name,
+    path: {
+      subpaths: ((p.path && p.path.subpaths) || []).map((sp) => ({
+        closed: !!sp.closed,
+        anchors: sp.anchors.map((a) => ({ ...a })),
+      })),
+    },
+  }));
+}
+
 /** A structural snapshot: plain data, with surfaces held by REFERENCE. */
 function snapTree(list) {
   return list.map((l) => {
@@ -97,6 +118,7 @@ class Transaction {
     this.tiles = new Map();
     this.treeBefore = null;
     this.selBefore = undefined;
+    this.pathsBefore = undefined;
     this.touchedTiles = 0;
   }
 
@@ -117,7 +139,10 @@ class Transaction {
     }
   }
 
-  get isEmpty() { return this.tiles.size === 0 && this.treeBefore === null && this.selBefore === undefined; }
+  get isEmpty() {
+    return this.tiles.size === 0 && this.treeBefore === null
+      && this.selBefore === undefined && this.pathsBefore === undefined;
+  }
 }
 
 export class History {
@@ -147,6 +172,7 @@ export class History {
     if (doc) {
       this.open.treeBefore = snapTree(doc.layers);
       this.open.selBefore = doc.selection;
+      this.open.pathsBefore = snapPaths(doc.paths);
     }
     return this.open;
   }
@@ -220,6 +246,11 @@ export class History {
       const now = doc.selection;
       doc.selection = t.selBefore;
       t.selBefore = now;
+    }
+    if (t.pathsBefore !== undefined) {
+      const now = snapPaths(doc.paths);
+      doc.paths = t.pathsBefore;
+      t.pathsBefore = now;
     }
   }
 

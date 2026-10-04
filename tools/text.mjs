@@ -23,7 +23,7 @@ import {
   TEXT_FIELDS, WARP_FIELDS,
 } from '../js/core/text.js';
 import { ok, eq, worst, note, done } from './_harness.mjs';
-import { runInBrowser } from './_browser.mjs';
+import { runInBrowserCached } from './_browser.mjs';
 import { mulberry32 } from '../js/core/util.js';
 
 /** Every character ten wide, so every expected number is an integer. */
@@ -385,7 +385,7 @@ const flat = (s) => [...s].length * UNIT;
   // Measuring each character on its own instead would drift by a pixel per
   // kerned pair, which is invisible in a sans at 16px and glaring in a serif
   // at 200px -- so the comparison runs at a large size in a serif.
-  const got = JSON.parse(runInBrowser(`
+  const got = JSON.parse(runInBrowserCached(`
     const cv = document.createElement('canvas');
     cv.width = 1200; cv.height = 300;
     const g = cv.getContext('2d');
