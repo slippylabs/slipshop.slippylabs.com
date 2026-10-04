@@ -139,6 +139,8 @@ function layerHeader(l, blocks) {
   o.fill = l.fill || null;
   o.text = l.text || null;
   o.blendIf = l.blendIf || null;
+  o.effects = l.effects && l.effects.length ? l.effects : null;
+  o.shape = l.shape || null;
   o.children = l.children ? l.children.map((c) => layerHeader(c, blocks)) : null;
   return o;
 }
@@ -226,6 +228,8 @@ export function loadProject(bytes) {
     l.fill = h.fill || null;
     l.text = h.text || null;
     l.blendIf = h.blendIf || null;
+    l.effects = h.effects || [];
+    l.shape = h.shape || null;
     l.children = h.children ? h.children.map(readLayer) : (h.type === 'group' ? [] : null);
     return l;
   };

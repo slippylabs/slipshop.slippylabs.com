@@ -408,6 +408,86 @@ def main():
         if rec:
             ok(rec["name"] == "playable-test", f"with the right document name ({rec['name']})")
 
+        print("\n-- layer effects --")
+        # A clean two-layer document: white below, one opaque red square above,
+        # so the shadow has somewhere to fall and something to fall on.
+        pg.evaluate("""
+          const e = window.__slipshop.ed;
+          e.newDocument(400, 300, { background: [1, 1, 1, 1] });
+          e.addLayer();
+          const r = { x: 150, y: 100, w: 100, h: 100 };
+          const buf = new Float32Array(r.w * r.h * 4);
+          for (let i = 0; i < r.w * r.h; i++) { buf[i * 4] = 1; buf[i * 4 + 3] = 1; }
+          e.active.surface.writeRect(r, buf);
+          e.invalidate();
+          e.emit('layers');
+        """)
+        ok(wait_for(pg, "window.__slipshop.stats().layers === 2"), "a clean two-layer document for effects")
+        before = pg.evaluate("window.__slipshop.pixel(255, 205)")
+        ok(before[0] > 0.9 and before[1] > 0.9, f"the spot below-right of the square starts white {before}")
+
+        pg.evaluate("""
+          const e = window.__slipshop.ed;
+          e.setLayerProp(e.activeId, 'effects', [{
+            type: 'dropShadow', enabled: true, color: [0, 0, 0], opacity: 1,
+            angle: 135, distance: 12, spread: 1, size: 6, blend: 'multiply',
+          }]);
+        """)
+        ok(wait_for(pg, "window.__slipshop.pixel(255, 205)[0] < 0.6"),
+           "a drop shadow darkens the canvas down-right of the square")
+        shadow = pg.evaluate("window.__slipshop.pixel(255, 205)")
+        note(f"shadow pixel {shadow}")
+        # Light from the upper left means the shadow goes down-RIGHT, not up-left.
+        up_left = pg.evaluate("window.__slipshop.pixel(130, 80)")
+        ok(up_left[0] > 0.9, f"and nothing darkens up-left, where the light is {up_left}")
+
+        # Fill 0 is the feature: the square's own pixels go, the shadow stays.
+        pg.evaluate("const e=window.__slipshop.ed; e.setLayerProp(e.activeId,'fillOpacity',0)")
+        ok(wait_for(pg, "window.__slipshop.pixel(200,150)[1] > 0.9"), "at Fill 0 the square's own red is gone")
+        ok(pg.evaluate("window.__slipshop.pixel(255, 205)[0]") < 0.6, "and its shadow is still there")
+        pg.evaluate("const e=window.__slipshop.ed; e.setLayerProp(e.activeId,'fillOpacity',1)")
+
+        # A stroke, which is the effect most likely to be cut off at a repaint
+        # boundary: 10px outside a square that sits well inside the canvas.
+        pg.evaluate("""
+          const e = window.__slipshop.ed;
+          e.setLayerProp(e.activeId, 'effects', [{
+            type: 'stroke', enabled: true, color: [0, 0, 1], opacity: 1,
+            size: 8, position: 'outside', blend: 'normal',
+          }]);
+        """)
+        ok(wait_for(pg, "window.__slipshop.pixel(145, 150)[2] > 0.9"), "an 8px outside stroke paints to the left of the square")
+        for px, py in [(200, 95), (255, 150), (200, 205)]:
+            v = pg.evaluate(f"window.__slipshop.pixel({px}, {py})")
+            ok(v[2] > 0.9 and v[0] < 0.1, f"the stroke is unbroken at {px},{py} {v}")
+
+        # The panel is real UI: the nine rows exist and the eye toggles one.
+        ok(pg.evaluate("document.querySelectorAll('.sp-fx-head').length") == 9,
+           "the Layer Effects panel lists all nine effects")
+        n_before = pg.evaluate("window.__slipshop.ed.active.effects.length")
+        pg.evaluate("""
+          const heads = [...document.querySelectorAll('.sp-fx-head')];
+          const row = heads.find(h => h.querySelector('.sp-fx-name').textContent === 'Outer Glow');
+          row.querySelector('.sp-eye').click();
+        """)
+        ok(wait_for(pg, f"window.__slipshop.ed.active.effects.length === {n_before + 1}"),
+           "clicking the eye in the panel adds that effect")
+        # Adding one opens it, so its sliders should already be on screen.
+        ok(pg.evaluate("document.querySelectorAll('.sp-fx-body input[type=range]').length") >= 2,
+           "and its sliders come up with it")
+        pg.evaluate("""
+          const heads = [...document.querySelectorAll('.sp-fx-head')];
+          const row = heads.find(h => h.querySelector('.sp-fx-name').textContent === 'Outer Glow');
+          row.querySelector('.sp-fx-name').click();
+        """)
+        ok(pg.evaluate("document.querySelectorAll('.sp-fx-body').length") == 0,
+           "clicking the name folds it away again")
+
+        # Undo has to put the effect list back, not just the pixels.
+        pg.keyboard.press("Control+z")
+        ok(wait_for(pg, f"window.__slipshop.ed.active.effects.length === {n_before}"),
+           "undo removes the effect again")
+
         print("\n-- phone layout --")
         pg.set_viewport_size({"width": 390, "height": 844})
         # The viewport override answers before the page relays out, so wait on

@@ -6,7 +6,7 @@
 // thing that must survive a re-render is which panels are open, which ui.js
 // remembers by title.
 
-import { el, panel, row, btn, slider, number, select, selectGroups, checkbox, text, toast, hint, setChildren, modal } from './ui.js';
+import { el, panel, row, btn, slider, number, select, selectGroups, checkbox, text, colorInput, toast, hint, setChildren, modal } from './ui.js';
 import { MODE_GROUPS } from '../core/blend.js';
 import { TOOLS, TOOL_BY_ID, isPaintTool, isSelectTool } from './tools.js';
 import { GRADIENT_SHAPES } from '../core/gradient.js';
@@ -14,6 +14,7 @@ import { toHex, parseHex, rgbToHsv, hsvToRgb } from '../core/color.js';
 import { rect, clamp01, luma709 } from '../core/util.js';
 import { compositeDoc } from '../core/composite.js';
 import { applyAdjust } from '../core/adjust.js';
+import { EFFECT_TYPES, EFFECT_FIELDS, EFFECT_LABELS, effectDefaults } from '../core/effects.js';
 import { resize } from '../core/resample.js';
 
 const BLEND_GROUPS = MODE_GROUPS.map(([g, list]) => [g, list.map((m) => [m, prettyMode(m)])]);
@@ -27,6 +28,7 @@ export function renderDock(ed, view, opt, dock) {
     colourPanel(ed),
     brushPanel(ed, opt),
     layersPanel(ed, view),
+    effectsPanel(ed),
     historyPanel(ed),
     infoPanel(ed),
   );
@@ -256,6 +258,7 @@ function layersPanel(ed, view) {
       if (l.blend !== 'normal' && l.blend !== 'pass-through') meta.push(prettyMode(l.blend));
       if (l.opacity < 1) meta.push(`${Math.round(l.opacity * 100)}%`);
       if (l.locked) meta.push('\u{1F512}');
+      if (l.effects && l.effects.some((e) => e && e.enabled !== false)) meta.push('fx');
       const r = el('div', {
         class: `sp-layer${sel ? ' sel' : ''}${l.clipping ? ' clipped' : ''}`,
         dataset: { layer: l.id },
@@ -315,6 +318,113 @@ function layersPanel(ed, view) {
       btn('Group', () => ed.groupSelected()),
       btn('Merge down', () => ed.mergeDown())));
 }
+
+// ------------------------------------------------------------ layer effects
+
+/** Which effect's fields are expanded. Kept outside the panel because the
+ *  panel is thrown away and rebuilt on every document event. */
+let openEffect = null;
+
+function effectsPanel(ed) {
+  const l = ed.active;
+  if (!l) return panel('Layer Effects', { open: false }, hintRow('Select a layer.'));
+
+  const byType = new Map((l.effects || []).map((e) => [e.type, e]));
+
+  /** Read-modify-write through history, so every change is one undo step.
+   *  The list is replaced rather than mutated: the undo snapshot copies the
+   *  effects it was given, and editing those objects in place would rewrite
+   *  the past as well as the present. */
+  const write = (type, patch, { live = false } = {}) => {
+    const next = (l.effects || []).map((e) => (e.type === type ? { ...e, ...patch } : e));
+    if (!byType.has(type)) next.push({ ...effectDefaults(type), ...patch });
+    ed.setLayerProp(l.id, 'effects', next, { live });
+  };
+  const drop = (type) => ed.setLayerProp(l.id, 'effects', (l.effects || []).filter((e) => e.type !== type));
+
+  const rows = [];
+  for (const type of EFFECT_TYPES) {
+    const have = byType.get(type);
+    const on = !!have && have.enabled !== false;
+    const head = el('div', { class: `sp-fx-head${openEffect === type ? ' open' : ''}` },
+      el('button', {
+        class: `sp-eye${on ? '' : ' off'}`, text: on ? '◉' : '○',
+        title: on ? 'Disable' : 'Enable',
+        onclick: (e) => {
+          e.stopPropagation();
+          // Open it BEFORE the write: setLayerProp emits 'layers', which
+          // rebuilds this whole panel, so anything set afterwards is read on
+          // the next event rather than this one and the new effect comes up
+          // folded away.
+          if (!have) { openEffect = type; write(type, { enabled: true }); }
+          else write(type, { enabled: !on });
+        },
+      }),
+      el('button', {
+        class: 'sp-fx-name', text: EFFECT_LABELS[type],
+        onclick: () => { openEffect = openEffect === type ? null : type; ed.emit('layers'); },
+      }),
+      have ? el('button', { class: 'sp-fx-x', text: '×', title: 'Remove', onclick: (e) => { e.stopPropagation(); drop(type); } }) : null,
+    );
+    rows.push(head);
+    if (openEffect !== type) continue;
+    const fx = { ...effectDefaults(type), ...(have || {}) };
+    const body = [];
+    for (const [label, key, kind, ...rest] of EFFECT_FIELDS[type]) {
+      if (kind === 'num') {
+        const [min, max, step] = rest;
+        body.push(row(label, slider({
+          get: () => fx[key], min, max, step,
+          onInput: (v) => write(type, { [key]: v }, { live: true }),
+          onCommit: (v) => { write(type, { [key]: v }, { live: true }); ed.commitProp(); },
+        })));
+      } else if (kind === 'bool') {
+        body.push(row('', checkbox({ get: () => !!fx[key], label, onCommit: (v) => write(type, { [key]: v }) })));
+      } else if (kind === 'sel') {
+        body.push(row(label, select({
+          get: () => fx[key],
+          options: rest[0].map((v) => [v, v[0].toUpperCase() + v.slice(1)]),
+          onCommit: (v) => write(type, { [key]: v }),
+        })));
+      } else if (kind === 'col') {
+        body.push(row(label, colorInput({
+          get: () => toHex(fx[key]),
+          onCommit: (hex) => { const c = parseHex(hex); if (c) write(type, { [key]: c.slice(0, 3) }); },
+        })));
+      }
+    }
+    if (type === 'gradientOverlay') {
+      // Two stops is enough for an overlay and keeps the panel one line; the
+      // full stop editor lives in the gradient tool, which this borrows from.
+      const stops = fx.stops || effectDefaults(type).stops;
+      body.push(row('From', colorInput({
+        get: () => toHex(stops[0].color),
+        onCommit: (hex) => { const c = parseHex(hex); if (c) write(type, { stops: [{ pos: 0, color: c.slice(0, 3) }, { ...stops[stops.length - 1] }] }); },
+      })));
+      body.push(row('To', colorInput({
+        get: () => toHex(stops[stops.length - 1].color),
+        onCommit: (hex) => { const c = parseHex(hex); if (c) write(type, { stops: [{ ...stops[0] }, { pos: 1, color: c.slice(0, 3) }] }); },
+      })));
+    }
+    rows.push(el('div', { class: 'sp-fx-body' }, ...body));
+  }
+
+  const n = (l.effects || []).filter((e) => e.enabled !== false).length;
+  return panel('Layer Effects', { open: n > 0, note: n ? `${n} active` : undefined },
+    el('div', { class: 'sp-fx-list' }, ...rows),
+    el('div', { class: 'sp-btn-row' },
+      btn('Clear', () => { openEffect = null; ed.setLayerProp(l.id, 'effects', []); }, { title: 'Remove every effect' }),
+      btn('Copy', () => { copiedEffects = (l.effects || []).map((e) => ({ ...e })); toast('Effects copied'); }),
+      btn('Paste', () => {
+        if (!copiedEffects) return toast('Nothing copied', { bad: true });
+        ed.setLayerProp(l.id, 'effects', copiedEffects.map((e) => ({ ...e })));
+      })),
+    hintRow('Fill drops the layer\'s own pixels and keeps its effects \u2014 a stroke with nothing inside it.'));
+}
+
+let copiedEffects = null;
+
+function hintRow(t) { return el('p', { class: 'sp-note', text: t }); }
 
 function drawThumb(ed, layer, cv) {
   const g = cv.getContext('2d');

@@ -2033,3 +2033,32 @@ body.sp-app .scanlines { display: none; }
 @media (max-width: 560px) {
   .sp-status { padding-right: 78px; }
 }
+
+/* ---- layer effects ------------------------------------------------------ */
+.sp-fx-list { display: flex; flex-direction: column; gap: 1px; margin-bottom: 6px; }
+.sp-fx-head {
+  display: flex; align-items: center; gap: 4px;
+  background: rgba(10, 32, 20, 0.5); border-radius: 3px; padding: 1px 2px;
+}
+.sp-fx-head.open { background: rgba(26, 90, 56, 0.55); }
+.sp-fx-name {
+  flex: 1 1 auto; min-width: 0; text-align: left; background: none; border: 0;
+  color: #cdebd8; font: inherit; font-size: 11px; padding: 4px 2px; cursor: pointer;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.sp-fx-head.open .sp-fx-name { color: #39ff8f; }
+.sp-fx-x {
+  flex: 0 0 auto; background: none; border: 0; color: #7fae92;
+  font-size: 13px; line-height: 1; cursor: pointer; padding: 2px 5px;
+}
+.sp-fx-x:hover { color: #ff7b6b; }
+.sp-fx-body {
+  padding: 4px 4px 6px 18px; border-left: 2px solid rgba(57, 255, 143, 0.35);
+  margin: 0 0 3px 6px;
+}
+@media (max-width: 560px) {
+  /* The 44px block, but a row of nine of these cannot each be 44px tall and
+     still fit -- the name is the target and it spans the row. */
+  .sp-fx-name { min-height: 40px; font-size: 13px; }
+  .sp-fx-x { min-width: 44px; min-height: 40px; }
+}

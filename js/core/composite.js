@@ -13,6 +13,11 @@
 //     as      <- as * clipBase                       (if it is a clipping layer)
 //     backdrop <- composite(blend, backdrop, Cs, as)
 //
+// LAYER EFFECTS slot into the same loop as extra buffers, below and above the
+// layer's own pixels. They are coveraged by `opacity` but NOT by `fillOpacity`,
+// which is the whole reason those are two sliders: Fill 0 leaves a shape's
+// stroke and shadow with nothing inside them.
+//
 // An ADJUSTMENT layer is different in kind: it does not add colour, it
 // rewrites the backdrop beneath it. That is why it cannot be expressed as a
 // blend mode, and why its mask and opacity mean "how much of the adjusted
@@ -21,6 +26,7 @@
 import { composite as compositePixel, blendColor, SEPARABLE, NON_SEPARABLE } from './blend.js';
 import { srgbToLinear, linearToSrgb } from './color.js';
 import { rect, rectIntersect, rectEmpty, clamp01 } from './util.js';
+import { renderEffects, hasEffects, layerMargin } from './effects.js';
 
 /**
  * @param doc   a Doc
@@ -91,7 +97,10 @@ export function compositeInto(dst, layers, doc, r, opts = {}) {
       for (let i = 0; i < n; i++) cov[i] *= clipBase[i];
     }
 
+    const fx = hasEffects(layer) ? effectLayers(layer, doc, r, opts) : null;
+    if (fx) drawEffects(dst, fx.below, layer, clipBase, r, doc);
     blendOnto(dst, src, cov, layer.effectiveBlend, n, doc.linearBlend);
+    if (fx) drawEffects(dst, fx.above, layer, clipBase, r, doc);
 
     // A non-clipping layer becomes the clip base for the clipping layers
     // above it. Snapshot its own coverage, not the accumulated backdrop:
@@ -219,6 +228,75 @@ function applyAdjustmentLayer(dst, layer, doc, r, opts, clipBase) {
     if (f >= 1) continue;
     const p = i * 4;
     for (let c = 0; c < 4; c++) dst[p + c] = before[p + c] + (dst[p + c] - before[p + c]) * f;
+  }
+}
+
+/**
+ * Render a layer's effects for a rect.
+ *
+ * An effect READS OUTSIDE the rect being painted -- a drop shadow 20px down
+ * comes from alpha 20px up -- so the source is read on a grown rect and the
+ * result cropped back, the same rule every spatial filter here obeys. It is
+ * deliberately NOT clipped to the document: a layer's pixels beyond the canvas
+ * edge are invisible but still cast a shadow inwards, as they do in Photoshop.
+ *
+ * The LAYER MASK is folded into the alpha before the effects are derived, not
+ * applied to them afterwards. That ordering is what makes a shadow follow the
+ * masked silhouette instead of the unmasked one -- masking the finished shadow
+ * would punch the mask's shape out of the shadow itself.
+ */
+function effectLayers(layer, doc, r, opts) {
+  const m = layerMargin(layer);
+  const rg = m > 0 ? rect(r.x - m, r.y - m, r.w + 2 * m, r.h + 2 * m) : r;
+  const srcG = new Float32Array(rg.w * rg.h * 4);
+  layerPixels(srcG, layer, doc, rg, opts);
+  if (layer.mask && layer.maskEnabled) {
+    const mk = layer.mask.readRect(rg);
+    for (let i = 0; i < rg.w * rg.h; i++) srcG[i * 4 + 3] *= mk[i];
+  }
+  const fx = renderEffects(layer, srcG, rg, effectBox(layer, doc));
+  if (m === 0) return fx;
+  const crop = (e) => ({ ...e, buf: cropRgba(e.buf, rg, r) });
+  return { below: fx.below.map(crop), above: fx.above.map(crop) };
+}
+
+/**
+ * What a position-dependent effect is anchored to: the layer's own content
+ * bounds, so the gradient overlay looks the same wherever the layer sits, and
+ * the document as the fallback for a layer with no surface of its own.
+ */
+function effectBox(layer, doc) {
+  if (!layer.effects.some((f) => f && f.enabled !== false && f.type === 'gradientOverlay')) return null;
+  if (layer.surface) {
+    const b = layer.surface.contentBounds();
+    if (b && b.w > 0 && b.h > 0) return b;
+  }
+  return doc.bounds;
+}
+
+/** The central sub-rect of an RGBA buffer laid out over `from`. */
+function cropRgba(buf, from, to) {
+  const out = new Float32Array(to.w * to.h * 4);
+  const ox = to.x - from.x, oy = to.y - from.y;
+  for (let y = 0; y < to.h; y++) {
+    const s = ((y + oy) * from.w + ox) * 4;
+    out.set(buf.subarray(s, s + to.w * 4), y * to.w * 4);
+  }
+  return out;
+}
+
+/** Blend a list of rendered effects onto the backdrop. */
+function drawEffects(dst, list, layer, clipBase, r, doc) {
+  if (!list.length) return;
+  const n = r.w * r.h;
+  const cov = new Float32Array(n);
+  for (const e of list) {
+    // `layer.opacity` and the effect's own opacity -- never fillOpacity.
+    const o = layer.opacity * e.opacity;
+    if (o <= 0) continue;
+    for (let i = 0; i < n; i++) cov[i] = e.buf[i * 4 + 3] * o;
+    if (layer.clipping && clipBase) for (let i = 0; i < n; i++) cov[i] *= clipBase[i];
+    blendOnto(dst, e.buf, cov, e.blend, n, doc.linearBlend);
   }
 }
 

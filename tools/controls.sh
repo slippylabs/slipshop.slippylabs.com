@@ -664,6 +664,120 @@ add "mosaic averages straight colour, so a transparent block takes a hidden hue"
   '        const al = buf[q + 3];
         r += buf[q]; g += buf[q + 1]; b += buf[q + 2]; a += al;' paint
 
+# ---------------------------------------------------------------- effects.js
+add "the shadow offset follows the light instead of opposing it" js/core/effects.js \
+  '  return [-dx, -dy];' \
+  '  return [dx, dy];' effects
+
+add "the drop shadow shows through its own layer" js/core/effects.js \
+  '  for (let i = 0; i < f.length; i++) f[i] *= 1 - alpha[i];' \
+  '  for (let i = 0; i < f.length; i++) f[i] *= 1;' effects
+
+add "the outer glow is not held outside the shape" js/core/effects.js \
+  '  for (let i = 0; i < f.length; i++) f[i] = clamp01(f[i] * (1 - alpha[i]));' \
+  '  for (let i = 0; i < f.length; i++) f[i] = clamp01(f[i]);' effects
+
+add "the inner shadow is not clipped to the shape" js/core/effects.js \
+  '  for (let i = 0; i < inv.length; i++) inv[i] = clamp01(inv[i] * alpha[i]);' \
+  '  for (let i = 0; i < inv.length; i++) inv[i] = clamp01(inv[i]);' effects
+
+add "spread applied after the blur instead of before" js/core/effects.js \
+  '  let f = applySpread(alpha, fx.spread);
+  f = offsetField(f, w, h, dx, dy);
+  f = blurField(f, w, h, (fx.size || 0) / 3);' \
+  '  let f = offsetField(alpha, w, h, dx, dy);
+  f = blurField(f, w, h, (fx.size || 0) / 3);
+  f = applySpread(f, fx.spread);' effects
+
+add "the stroke loses its half-pixel antialias ramp" js/core/effects.js \
+  '    f[i] = clamp01(Math.min(d - lo, hi - d) + 0.5);' \
+  '    f[i] = d >= lo && d <= hi ? 1 : 0;' effects
+
+add "an inside stroke measured from the wrong side" js/core/effects.js \
+  "  if (fx.position === 'inside') { lo = -size; hi = 0; }" \
+  "  if (fx.position === 'inside') { lo = 0; hi = size; }" effects
+
+add "the bevel keeps the normal-component light term" js/core/effects.js \
+  '      const k = (nx * lx + ny * ly) * 2;' \
+  '      const k = (nx * lx + ny * ly + (1 / (Math.hypot(-gx, -gy, 1) || 1)) * Math.sin(alt) - Math.sin(alt)) * 2;' effects
+
+add "the bevel light ignores the altitude" js/core/effects.js \
+  '  const lx = Math.cos(a) * Math.cos(alt);
+  const ly = -Math.sin(a) * Math.cos(alt);' \
+  '  const lx = Math.cos(a);
+  const ly = -Math.sin(a);' effects
+
+add "the effect margin forgets the shadow distance" js/core/effects.js \
+  "    case 'dropShadow': return Math.ceil(d + sz + 2);" \
+  "    case 'dropShadow': return Math.ceil(sz + 2);" effects
+
+add "inner effects get no margin, so they read a cropped rect" js/core/effects.js \
+  "    case 'innerShadow': return Math.ceil(d + sz + 2);" \
+  "    case 'innerShadow': return 0;" effects
+
+add "the bevel margin forgets the central difference" js/core/effects.js \
+  "    case 'bevel': return Math.ceil(sz + soft + 3);" \
+  "    case 'bevel': return Math.ceil(sz + soft);" effects
+
+add "the draw order follows the list instead of the type" js/core/effects.js \
+  '  const sorted = [...layer.effects].filter((f) => f && f.enabled !== false)
+    .sort((a, b) => ORDER.indexOf(a.type) - ORDER.indexOf(b.type));' \
+  '  const sorted = [...layer.effects].filter((f) => f && f.enabled !== false);' effects
+
+add "an outside stroke drawn above the layer's own pixels" js/core/effects.js \
+  "      ? (full.position === 'inside' ? 'above' : 'below')" \
+  "      ? 'above'" effects
+
+add "a disabled effect still rendered" js/core/effects.js \
+  '  !!(layer && layer.effects && layer.effects.some((f) => f && f.enabled !== false));' \
+  '  !!(layer && layer.effects && layer.effects.length > 0);' effects
+
+add "the gradient overlay anchored to the rect, not the layer" js/core/effects.js \
+  '  const b = box && box.w > 0 ? box : r;' \
+  '  const b = { x: r.x, y: r.y, w: r.w, h: r.h };' effects
+
+add "the gradient overlay discards the layer's alpha" js/core/effects.js \
+  '  for (let i = 0; i < alpha.length; i++) g[i * 4 + 3] = alpha[i];' \
+  '  for (let i = 0; i < alpha.length; i++) g[i * 4 + 3] = 1;' effects
+
+add "satin not clipped to the shape" js/core/effects.js \
+  '    f[i] = clamp01(v * alpha[i]);' \
+  '    f[i] = clamp01(v);' effects
+
+# -------------------------------------------------- effects in the compositor
+add "effects scaled by fillOpacity as well as opacity" js/core/composite.js \
+  '    const o = layer.opacity * e.opacity;' \
+  '    const o = layer.opacity * layer.fillOpacity * e.opacity;' effects
+
+add "below-effects drawn above the layer's pixels" js/core/composite.js \
+  '    if (fx) drawEffects(dst, fx.below, layer, clipBase, r, doc);
+    blendOnto(dst, src, cov, layer.effectiveBlend, n, doc.linearBlend);' \
+  '    blendOnto(dst, src, cov, layer.effectiveBlend, n, doc.linearBlend);
+    if (fx) drawEffects(dst, fx.below, layer, clipBase, r, doc);' effects
+
+add "the effect source read on the rect, not the grown rect" js/core/composite.js \
+  '  const rg = m > 0 ? rect(r.x - m, r.y - m, r.w + 2 * m, r.h + 2 * m) : r;' \
+  '  const rg = r;' effects
+
+add "the layer mask applied to the finished effect, not to its source" js/core/composite.js \
+  '  if (layer.mask && layer.maskEnabled) {
+    const mk = layer.mask.readRect(rg);
+    for (let i = 0; i < rg.w * rg.h; i++) srcG[i * 4 + 3] *= mk[i];
+  }' \
+  '  void 0;' effects
+
+add "each effect ignores its own blend mode" js/core/composite.js \
+  "    blendOnto(dst, e.buf, cov, e.blend, n, doc.linearBlend);" \
+  "    blendOnto(dst, e.buf, cov, 'normal', n, doc.linearBlend);" effects
+
+add "the cropped effect buffer off by a row" js/core/composite.js \
+  '    const s = ((y + oy) * from.w + ox) * 4;' \
+  '    const s = ((y + oy + 1) * from.w + ox) * 4;' effects
+
+add "a snapshot shares an effect's colour array" js/core/history.js \
+  '    if (Array.isArray(v)) o[k] = v.map((x) => (isPlainObject(x) ? cloneEffect(x) : x));' \
+  '    if (Array.isArray(v)) o[k] = v;' effects
+
 # ---------------------------------------------------------------- runner
 
 BK=$(mktemp -d)
@@ -679,8 +793,10 @@ for f in "${FILES[@]}"; do cp "$f" "$BK/$(echo "$f" | tr / _)"; done
 ran=0; caught=0
 for i in "${!NAMES[@]}"; do
   name="${NAMES[$i]}"
-  if [ -n "${ONLY:-}" ] && ! echo "$name" | grep -qE "$ONLY"; then continue; fi
   file="${FILES[$i]}"; from="${FROMS[$i]}"; to="${TOS[$i]}"; test="${TESTS[$i]}"
+  # ONLY matches the control name OR the oracle it fires, so ONLY=effects runs
+  # every control one oracle guards.
+  if [ -n "${ONLY:-}" ] && ! echo "$name $test" | grep -qE "$ONLY"; then continue; fi
   if ! FROM="$from" TO="$to" python3 - "$file" <<'PY'
 import os, sys
 p = sys.argv[1]

@@ -33,6 +33,28 @@ const LAYER_PROPS = [
   'clipping', 'maskEnabled', 'offset',
 ];
 
+/**
+ * One layer effect, copied deeply enough to be safe.
+ *
+ * A shallow spread is not enough: an effect holds a `color` array and the
+ * gradient overlay holds a `stops` array of objects, so a snapshot that shared
+ * them would be silently rewritten by the slider that was supposed to be
+ * undoable. Arrays and plain objects are copied; everything else is a number,
+ * a string or a boolean.
+ */
+const isPlainObject = (x) => !!x && typeof x === 'object' && !Array.isArray(x);
+
+function cloneEffect(e) {
+  const o = {};
+  for (const k in e) {
+    const v = e[k];
+    if (Array.isArray(v)) o[k] = v.map((x) => (isPlainObject(x) ? cloneEffect(x) : x));
+    else if (isPlainObject(v)) o[k] = cloneEffect(v);
+    else o[k] = v;
+  }
+  return o;
+}
+
 /** A structural snapshot: plain data, with surfaces held by REFERENCE. */
 function snapTree(list) {
   return list.map((l) => {
@@ -40,7 +62,7 @@ function snapTree(list) {
     for (const k of LAYER_PROPS) o[k] = Array.isArray(l[k]) ? l[k].slice() : l[k];
     o.surface = l.surface;                 // reference, never a copy
     o.mask = l.mask;
-    o.effects = l.effects ? l.effects.map((e) => ({ ...e })) : [];
+    o.effects = l.effects ? l.effects.map(cloneEffect) : [];
     o.adjust = l.adjust ? { kind: l.adjust.kind, params: { ...l.adjust.params } } : null;
     o.fill = l.fill ? { ...l.fill } : null;
     o.text = l.text ? { ...l.text } : null;
@@ -57,7 +79,7 @@ function restoreTree(snap) {
     for (const k of LAYER_PROPS) l[k] = Array.isArray(o[k]) ? o[k].slice() : o[k];
     l.surface = o.surface;
     l.mask = o.mask;
-    l.effects = o.effects.map((e) => ({ ...e }));
+    l.effects = o.effects.map(cloneEffect);
     l.adjust = o.adjust ? { kind: o.adjust.kind, params: { ...o.adjust.params } } : null;
     l.fill = o.fill ? { ...o.fill } : null;
     l.text = o.text ? { ...o.text } : null;
