@@ -378,6 +378,34 @@ for (let s = 0; s < 4; s++) {
   eq(leaked, 0, 'HIDING the base hides everything clipped to it -- the red never appears');
   ok(hidden[0] < 0.1 && hidden[2] > 0.9, 'and the layer below shows everywhere instead');
 
+  // A PASS-THROUGH GROUP ends any clipping group: a layer above it is not
+  // clipped to whatever sat below the group. The random stacks do produce
+  // pass-through groups and clipping layers, but almost never in that order
+  // with a visible difference, so the control for this did not fire.
+  const viaGroup = (passThrough) => {
+    const d = new Doc({ w: 8, h: 8 });
+    const g = new Layer({
+      type: 'group', name: 'g',
+      blend: passThrough ? 'pass-through' : 'multiply',
+      children: [new Layer({ type: 'raster', name: 'inner', surface: solid([1, 1, 0]) })],
+    });
+    d.layers.push(
+      new Layer({ type: 'raster', name: 'bottom', surface: solid([0, 0, 1]) }),
+      new Layer({ type: 'raster', name: 'base', surface: leftHalf([0, 1, 0]) }),
+      g,
+      new Layer({ type: 'raster', name: 'clipped', clipping: true, surface: solid([1, 0, 0]) }),
+    );
+    return compositeDoc(d, rect(0, 0, 8, 8));
+  };
+  const pt = viaGroup(true);
+  // Check the GREEN channel, not red: the group paints YELLOW (1,1,0) and the
+  // clipping layer is RED (1,0,0), so red is 1 either way and says nothing.
+  // Green is 0 where the red layer won and 1 where the yellow shows through.
+  const g6 = pt[(0 * 8 + 6) * 4 + 1];
+  const g1 = pt[(0 * 8 + 1) * 4 + 1];
+  ok(g1 < 0.1 && g6 < 0.1,
+    `a pass-through group ends the clipping chain -- the layer above it covers everything, not just the base below (green at x=1 ${g1.toFixed(2)}, x=6 ${g6.toFixed(2)})`);
+
   // A clipping layer with nothing below it to clip to must not clip to
   // whatever happened to be composited before, which is nothing here.
   const orphan = new Doc({ w: 8, h: 8 });
