@@ -1480,9 +1480,15 @@ body.sp-app .scanlines { display: none; }
 /* A menu is a button plus an absolutely positioned list. */
 .sp-drop { position: relative; display: flex; }
 .sp-drop-list {
-  position: absolute;
-  top: 100%;
-  left: 0;
+  /* FIXED, not absolute, and the coordinates come from ui.js.
+     .sp-top is a horizontal scroll container (overflow-x:auto /
+     overflow-y:hidden, so the bar can scroll on a narrow screen), and a scroll
+     container CLIPS its absolutely positioned descendants. An absolute list was
+     being cut to the 40px height of the bar: open, and invisible. A fixed
+     element is outside that clip. The cost is that fixed coordinates are
+     VIEWPORT coordinates, so top/left cannot be written here -- ui.js sets them
+     on open and refreshes them on scroll and resize. */
+  position: fixed;
   z-index: 40;
   min-width: 212px;
   max-height: min(70vh, 540px);

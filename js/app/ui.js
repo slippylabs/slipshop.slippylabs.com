@@ -242,10 +242,32 @@ export function dropdown(label, itemsFn) {
     if (!isOpen) {
       setChildren(list, ...itemsFn().map(renderItem));
       wrap.classList.add('open');
+      place();
     }
   });
   const list = el('div', { class: 'sp-drop-list', role: 'menu' });
   wrap.append(b, list);
+
+  // The list is position:fixed so it escapes .sp-top's overflow clip (see the
+  // .sp-drop-list rule in style.css for why). Fixed means viewport
+  // coordinates, so they are computed here rather than written in CSS, and
+  // refreshed by the listeners below whenever the page moves underneath.
+  function place() {
+    const r = b.getBoundingClientRect();
+    list.style.top = `${Math.round(r.bottom)}px`;
+    // Hang it off the button's left edge, but never off the side of the
+    // screen -- the rightmost menus open near the edge of a phone, where a
+    // 212px list would otherwise lay half of itself out of view.
+    const w = list.offsetWidth || 212;
+    const left = Math.min(r.left, Math.max(4, window.innerWidth - w - 4));
+    list.style.left = `${Math.round(Math.max(4, left))}px`;
+    // Only as tall as the room actually below the button. Without this the
+    // 39-item Filter menu runs off the bottom of a short window with no way
+    // to reach the end of it.
+    const room = window.innerHeight - r.bottom - 8;
+    list.style.maxHeight = `${Math.round(Math.max(160, Math.min(540, room)))}px`;
+  }
+  wrap._placeDropList = place;
 
   function renderItem(it) {
     if (it.sep) return el('hr');
@@ -264,4 +286,23 @@ document.addEventListener('click', (e) => {
   if (!e.target.closest('.sp-drop')) {
     document.querySelectorAll('.sp-drop.open').forEach((d) => d.classList.remove('open'));
   }
+});
+
+// A fixed list does not travel with the button it hangs off, so anything that
+// moves that button has to move the list too. Scroll is captured because it
+// fires on .sp-top itself (the menu bar scrolls sideways on a narrow screen)
+// and scroll events do not bubble.
+function repositionOpenDropdown() {
+  const open = document.querySelector('.sp-drop.open');
+  if (open && open._placeDropList) open._placeDropList();
+}
+window.addEventListener('resize', repositionOpenDropdown);
+document.addEventListener('scroll', repositionOpenDropdown, true);
+
+// Escape closes the menu, which a keyboard user otherwise could not do.
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  const open = document.querySelectorAll('.sp-drop.open');
+  if (!open.length) return;
+  open.forEach((d) => d.classList.remove('open'));
 });
