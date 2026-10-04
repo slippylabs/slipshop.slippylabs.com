@@ -255,6 +255,9 @@ export function commands(ed, view, opt, ctx) {
    * do nothing.
    */
   async function livePixelDialog(title, fields, params, run, { note } = {}) {
+    // A filter or a destructive adjustment writes pixels, so a text layer has
+    // to become an ordinary one first -- the same rule the brush follows.
+    if (ed.rasterizeForPaint()) toast(`${ed.lastRasterised} rasterised`);
     const surface = target();
     if (!surface) return false;
     const r = ed.selection ? (rectEmpty(selectionBounds(ed.selection)) ? ed.doc.bounds : selectionBounds(ed.selection)) : ed.doc.bounds;

@@ -182,6 +182,9 @@ export class Gesture {
 
   startPaint(e, x, y) {
     const ed = this.ed;
+    // A text layer owns its surface, so it has to stop being one before a
+    // brush touches it -- otherwise the next keystroke redraws over the stroke.
+    if (ed.rasterizeForPaint()) toast(`${ed.lastRasterised} rasterised so it can be painted on`);
     const layer = ed.active;
     const surface = ed.target;
     if (!surface) { toast('There is nothing to paint on -- add a layer', { bad: true }); this.active = false; return; }
@@ -631,6 +634,7 @@ export class Gesture {
   }
 
   bucket(x, y) {
+    if (this.ed.rasterizeForPaint()) toast(`${this.ed.lastRasterised} rasterised so it can be filled`);
     const ed = this.ed;
     const surface = ed.target;
     if (!surface || ed.active.locked) { this.active = false; return; }

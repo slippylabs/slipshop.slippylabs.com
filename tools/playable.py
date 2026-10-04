@@ -408,6 +408,110 @@ def main():
         if rec:
             ok(rec["name"] == "playable-test", f"with the right document name ({rec['name']})")
 
+        print("\n-- re-editable text --")
+        pg.evaluate("""
+          const e = window.__slipshop.ed;
+          e.newDocument(500, 300, { background: [1, 1, 1, 1] });
+          window.__slipshop.setTool('text');
+          e.setFg([0, 0, 0]);
+          e.addTextLayer(40, 140, { content: 'Hello', fontSize: 72, color: [0, 0, 0] });
+        """)
+        ok(wait_for(pg, "window.__slipshop.ed.active && window.__slipshop.ed.active.type === 'text'"),
+           "the text tool makes a layer of type text")
+        ok(pg.evaluate("!!window.__slipshop.ed.active.text"), "and that layer keeps its spec, not just pixels")
+        ok(pg.evaluate("window.__slipshop.ed.active.name") == "Hello",
+           "the layer is named after its words")
+
+        def ink():
+            return pg.evaluate("""(() => {
+              const d = window.__slipshop.ed.doc;
+              const px = window.__slipshop.ed.active.surface.readRect({x:0,y:0,w:d.w,h:d.h});
+              let n = 0;
+              for (let i = 0; i < d.w * d.h; i++) if (px[i*4+3] > 0.5) n++;
+              return n;
+            })()""")
+
+        short = ink()
+        ok(short > 500, f"the words are rasterised ({short} opaque pixels)")
+
+        # Editing the spec must redraw, not add to, the old render.
+        pg.evaluate("const e=window.__slipshop.ed; e.setText(e.activeId, { content: 'Hello there world' })")
+        longer = ink()
+        ok(longer > short * 1.5, f"a longer string draws more ink ({short} -> {longer})")
+        pg.evaluate("const e=window.__slipshop.ed; e.setText(e.activeId, { content: 'Hi' })")
+        shorter = ink()
+        ok(shorter < short, f"a shorter string leaves nothing of the old render behind ({longer} -> {shorter})")
+        ok(pg.evaluate("window.__slipshop.ed.active.name") == "Hi", "and the name follows the words")
+
+        # The size slider is live and undoable as one step.
+        n0 = pg.evaluate("window.__slipshop.stats().undo")
+        pg.evaluate("""
+          const e = window.__slipshop.ed;
+          for (let i = 0; i < 20; i++) e.setText(e.activeId, { fontSize: 40 + i }, { live: true });
+          e.commitProp();
+        """)
+        n1 = pg.evaluate("window.__slipshop.stats().undo")
+        ok(n1 == n0 + 1, f"a 20-event size drag is one undo step (got {n1 - n0})")
+        pg.keyboard.press("Control+z")
+        ok(wait_for(pg, "window.__slipshop.ed.active.text.fontSize === 72"), "undo restores the font size")
+
+        # A warp resamples through its inverse, so it must still put ink down.
+        pg.evaluate("""
+          const e = window.__slipshop.ed;
+          e.setText(e.activeId, { content: 'Warped', fontSize: 72, warp: { style: 'arc', bend: 0.6, horizontal: 0, vertical: 0 } });
+        """)
+        warped = ink()
+        ok(warped > 300, f"a warped text layer still rasterises ({warped} pixels)")
+        # And the warp moves it: an arc bows the block upward, so the topmost
+        # inked row must be higher than the unwarped one.
+        def top_row():
+            return pg.evaluate("""(() => {
+              const d = window.__slipshop.ed.doc;
+              const px = window.__slipshop.ed.active.surface.readRect({x:0,y:0,w:d.w,h:d.h});
+              for (let y = 0; y < d.h; y++) for (let x = 0; x < d.w; x++)
+                if (px[(y*d.w+x)*4+3] > 0.5) return y;
+              return -1;
+            })()""")
+        bowed = top_row()
+        pg.evaluate("const e=window.__slipshop.ed; e.setText(e.activeId, { warp: null })")
+        flat_top = top_row()
+        ok(bowed >= 0 and flat_top >= 0 and bowed < flat_top,
+           f"an arc bows the text upward (top row {bowed} vs {flat_top})")
+
+        # The Text panel is real UI and drives the layer.
+        ok(pg.evaluate("!!document.querySelector('.sp-textarea')"), "the Text panel shows the words")
+        pg.evaluate("""
+          const ta = document.querySelector('.sp-textarea');
+          ta.value = 'Typed in';
+          ta.dispatchEvent(new Event('input', { bubbles: true }));
+          ta.dispatchEvent(new Event('change', { bubbles: true }));
+        """)
+        ok(wait_for(pg, "window.__slipshop.ed.active.text.content === 'Typed in'"),
+           "typing in the panel updates the layer's spec")
+
+        # Painting on a text layer rasterises it rather than being lost.
+        pg.evaluate("window.__slipshop.setTool('brush'); window.__slipshop.ed.setFg([1,0,0]); window.__slipshop.ed.brush.size = 40")
+        drag(pg, [(100, 60), (400, 60)])
+        ok(wait_for(pg, "window.__slipshop.ed.active.type === 'raster'"),
+           "painting on a text layer rasterises it")
+        ok(pg.evaluate("!window.__slipshop.ed.active.text"), "and drops the spec, so the words stop being redrawn")
+        red = pg.evaluate("window.__slipshop.pixel(250, 60)")
+        ok(red[0] > 0.9 and red[1] < 0.2, f"the brush stroke survived {red}")
+
+        # A duplicate of a text layer is still a text layer, with its own spec.
+        pg.evaluate("""
+          const e = window.__slipshop.ed;
+          e.addTextLayer(30, 250, { content: 'Dup me', fontSize: 40 });
+          e.duplicateLayer();
+        """)
+        ok(pg.evaluate("window.__slipshop.ed.active.type === 'text' && !!window.__slipshop.ed.active.text"),
+           "duplicating a text layer keeps its spec")
+        ok(pg.evaluate("""(() => {
+             const e = window.__slipshop.ed;
+             const all = e.doc.layers.filter(l => l.text);
+             return all.length >= 2 && all[0].text !== all[1].text;
+           })()"""), "and the copy has a spec of its own, not a shared one")
+
         print("\n-- layer effects --")
         # A clean two-layer document: white below, one opaque red square above,
         # so the shadow has somewhere to fall and something to fall on.

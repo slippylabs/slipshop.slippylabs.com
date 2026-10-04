@@ -115,41 +115,18 @@ ctx.afterDocChange = afterDocChange;
 
 // --------------------------------------------------------------- the text tool
 ctx.placeText = (x, y) => {
-  const surface = ed.target;
-  if (!surface || surface.channels !== 4) { toast('Text needs a pixel layer', { bad: true }); return; }
-  // Rendered through a canvas, because font rasterisation is the browser's
-  // job and nothing good comes of reimplementing it. The text is baked into
-  // pixels -- re-editable text layers are the obvious next step and are
-  // honestly not here yet.
-  const cv = document.createElement('canvas');
-  cv.width = ed.doc.w;
-  cv.height = ed.doc.h;
-  const g = cv.getContext('2d');
-  g.font = `${opt.fontWeight} ${opt.fontSize}px ${opt.fontFamily}`;
-  g.textBaseline = 'alphabetic';
-  g.fillStyle = toHex(ed.fg);
-  const lines = String(opt.text || '').split('\n');
-  const lh = opt.fontSize * 1.2;
-  lines.forEach((line, i) => g.fillText(line, x, y + i * lh));
-  const img = g.getImageData(0, 0, cv.width, cv.height);
-  const r = ed.doc.bounds;
-  ed.editTarget('Text', r, () => {
-    const dst = surface.readRect(r);
-    const sel = ed.selection ? ed.selection.readRect(r) : null;
-    for (let i = 0; i < r.w * r.h; i++) {
-      let a = img.data[i * 4 + 3] / 255;
-      if (sel) a *= sel[i];
-      if (a <= 0) continue;
-      const p = i * 4;
-      const ab = dst[p + 3];
-      const ao = a + ab * (1 - a);
-      for (let c = 0; c < 3; c++) {
-        dst[p + c] = ((img.data[p + c] / 255) * a + dst[p + c] * ab * (1 - a)) / ao;
-      }
-      dst[p + 3] = ao;
-    }
-    surface.writeRect(r, dst);
+  // A click makes a re-editable TEXT LAYER, not pixels. The spec lives on the
+  // layer and the surface is derived from it, so the words stay editable --
+  // which also means the layer has to be rasterised before anything paints on
+  // it, or the next keystroke would redraw over the brush stroke.
+  const l = ed.addTextLayer(x, y, {
+    content: opt.text || 'Type here',
+    fontFamily: opt.fontFamily,
+    fontSize: opt.fontSize,
+    fontWeight: opt.fontWeight,
   });
+  hint('Text layer added \u2014 edit it in the Text panel. Painting on it will rasterise it.');
+  return l;
 };
 
 // ------------------------------------------------------------------ chrome

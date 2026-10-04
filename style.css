@@ -2062,3 +2062,12 @@ body.sp-app .scanlines { display: none; }
   .sp-fx-name { min-height: 40px; font-size: 13px; }
   .sp-fx-x { min-width: 44px; min-height: 40px; }
 }
+
+/* ---- text layers -------------------------------------------------------- */
+.sp-textarea {
+  width: 100%; box-sizing: border-box; resize: vertical;
+  background: #04120b; color: #cdebd8; border: 1px solid #1c5a38;
+  border-radius: 3px; padding: 5px 6px; font: inherit; font-size: 12px;
+  line-height: 1.35; margin-bottom: 6px; min-height: 56px;
+}
+.sp-textarea:focus { outline: none; border-color: #39ff8f; }

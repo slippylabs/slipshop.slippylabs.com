@@ -12,6 +12,8 @@
 
 import { Doc, Layer, newDoc, validate } from '../core/doc.js';
 import { History, edit as guardedEdit } from '../core/history.js';
+import { textDefaults } from '../core/text.js';
+import { renderTextLayer } from './textlayer.js';
 import { compositeDoc } from '../core/composite.js';
 import { Surface } from '../core/tiles.js';
 import { applyAdjust } from '../core/adjust.js';
@@ -104,15 +106,11 @@ export class Editor {
     if (!loc) return;
     const src = loc.list[loc.index];
     this.history.begin('Duplicate layer', this.doc);
-    const copy = new Layer({
-      type: src.type, name: `${src.name} copy`, visible: src.visible,
-      opacity: src.opacity, fillOpacity: src.fillOpacity, blend: src.blend,
-      clipping: src.clipping, adjust: src.adjust ? structuredClone(src.adjust) : null,
-      fill: src.fill ? { ...src.fill } : null,
-    });
-    if (src.surface) copy.surface = src.surface.clone();
-    if (src.mask) copy.mask = src.mask.clone();
-    if (src.children) copy.children = src.children.map((c) => cloneLayer(c));
+    // Through cloneLayer, not a second inline copy of the field list: this had
+    // its own and the two drifted, so a duplicate silently lost its effects,
+    // its text spec and its Blend If ranges.
+    const copy = cloneLayer(src);
+    copy.name = `${src.name} copy`;
     loc.list.splice(loc.index + 1, 0, copy);
     this.history.commit();
     this.activeId = copy.id;
@@ -337,6 +335,96 @@ export class Editor {
   }
 
   /** Run an edit on the active target with undo recorded. */
+  // --------------------------------------------------------------- text
+
+  /**
+   * A new re-editable text layer. The spec is the truth; the surface is
+   * derived from it and rebuilt on every edit.
+   */
+  addTextLayer(x, y, spec = {}) {
+    this.history.begin('Text layer', this.doc);
+    const loc = this.doc.locate(this.activeId);
+    const text = {
+      ...textDefaults(), x, y, color: [...this.fg], ...spec,
+    };
+    const l = new Layer({
+      type: 'text',
+      name: shortName(text.content),
+      surface: this.doc.newSurface(4),
+      text,
+    });
+    const list = loc ? loc.list : this.doc.layers;
+    list.splice(loc ? loc.index + 1 : list.length, 0, l);
+    renderTextLayer(this.doc, l);
+    this.history.commit();
+    this.activeId = l.id;
+    this.invalidate();
+    this.emit('layers');
+    return l;
+  }
+
+  /**
+   * Change a text layer's spec and redraw it.
+   *
+   * The surface is touched over the WHOLE document before the redraw, because
+   * renderTextLayer clears all of it -- the text may have got shorter, and an
+   * undo that only restored the new, smaller rect would leave the tail of the
+   * old render behind.
+   */
+  setText(id, patch, { live = false } = {}) {
+    const l = this.doc.find(id);
+    if (!l || !l.text || !l.surface) return;
+    this.history.begin('Edit text', this.doc);
+    this.history.touch(l.surface, this.doc.bounds);
+    // Follow the content with the layer's name only while the name is still
+    // the one this derived last time. No extra flag to keep in sync, and a
+    // name the user typed is never overwritten.
+    const autoNamed = l.name === shortName(l.text.content);
+    l.text = { ...l.text, ...patch };
+    if (autoNamed) l.name = shortName(l.text.content);
+    renderTextLayer(this.doc, l);
+    if (!live) this.history.commit();
+    this.invalidate();
+    this.emit('layers');
+  }
+
+  /**
+   * Turn a text layer into ordinary pixels.
+   *
+   * Painting on a text layer has to do this first: the spec owns the surface,
+   * so the next keystroke would redraw over the brush stroke. Photoshop asks;
+   * this does it and says so, which is the same outcome with one fewer dialog.
+   */
+  /**
+   * Called by anything that is about to write pixels: if the target is a text
+   * layer, turn it into one first. Returns true if it had to.
+   *
+   * One call at each entry point rather than a side effect inside the `target`
+   * getter -- that getter is also read to SAMPLE pixels, by the eyedropper and
+   * the histogram, and rasterising a layer because something looked at it is
+   * the kind of surprise that is very hard to track down later.
+   */
+  rasterizeForPaint() {
+    const l = this.active;
+    if (!l || !l.text || this.editingMask) return false;
+    const name = l.name;
+    this.rasterizeText(l.id, { silent: true });
+    this.lastRasterised = name;
+    return true;
+  }
+
+  rasterizeText(id = this.activeId, { silent = false } = {}) {
+    const l = this.doc.find(id);
+    if (!l || !l.text) return false;
+    this.history.begin('Rasterise text', this.doc);
+    l.text = null;
+    l.type = 'raster';
+    this.history.commit();
+    this.emit('layers');
+    if (!silent) this.emit('rasterised');
+    return true;
+  }
+
   editTarget(label, r, fn) {
     const surface = this.target;
     if (!surface) return;
@@ -346,12 +434,29 @@ export class Editor {
   }
 }
 
+/** A layer name from its text: the first line, trimmed to something that fits
+ *  the panel, so a text layer is recognisable without opening it. */
+function shortName(content) {
+  const first = String(content || '').split('\n')[0].trim();
+  if (!first) return 'Text';
+  return first.length > 22 ? `${first.slice(0, 21)}\u2026` : first;
+}
+
 function cloneLayer(src) {
+  // Everything the layer carries, not just the fields that existed when this
+  // was written: a duplicate that silently lost its effects, its text spec or
+  // its Blend If ranges is a duplicate of something else.
   const copy = new Layer({
     type: src.type, name: src.name, visible: src.visible, opacity: src.opacity,
     fillOpacity: src.fillOpacity, blend: src.blend, clipping: src.clipping,
+    locked: src.locked, maskEnabled: src.maskEnabled,
+    offset: Array.isArray(src.offset) ? src.offset.slice() : src.offset,
     adjust: src.adjust ? structuredClone(src.adjust) : null,
     fill: src.fill ? { ...src.fill } : null,
+    text: src.text ? structuredClone(src.text) : null,
+    shape: src.shape ? structuredClone(src.shape) : null,
+    blendIf: src.blendIf ? structuredClone(src.blendIf) : null,
+    effects: src.effects ? structuredClone(src.effects) : [],
   });
   if (src.surface) copy.surface = src.surface.clone();
   if (src.mask) copy.mask = src.mask.clone();

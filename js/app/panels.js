@@ -15,6 +15,7 @@ import { rect, clamp01, luma709 } from '../core/util.js';
 import { compositeDoc } from '../core/composite.js';
 import { applyAdjust } from '../core/adjust.js';
 import { EFFECT_TYPES, EFFECT_FIELDS, EFFECT_LABELS, effectDefaults } from '../core/effects.js';
+import { TEXT_FIELDS, WARP_STYLES, WARP_FIELDS, warpDefaults, bendRange, textDefaults } from '../core/text.js';
 import { resize } from '../core/resample.js';
 
 const BLEND_GROUPS = MODE_GROUPS.map(([g, list]) => [g, list.map((m) => [m, prettyMode(m)])]);
@@ -28,6 +29,7 @@ export function renderDock(ed, view, opt, dock) {
     colourPanel(ed),
     brushPanel(ed, opt),
     layersPanel(ed, view),
+    textPanel(ed),
     effectsPanel(ed),
     historyPanel(ed),
     infoPanel(ed),
@@ -317,6 +319,116 @@ function layersPanel(ed, view) {
       l && l.mask ? btn('Apply mask', () => ed.removeMask(ed.activeId, { apply: true })) : null,
       btn('Group', () => ed.groupSelected()),
       btn('Merge down', () => ed.mergeDown())));
+}
+
+// -------------------------------------------------------------------- text
+
+const FONTS = [
+  ['sans-serif', 'Sans'], ['serif', 'Serif'], ['monospace', 'Mono'],
+  ['cursive', 'Cursive'], ['fantasy', 'Fantasy'],
+  ['system-ui', 'System'], ['Georgia, serif', 'Georgia'],
+  ['"Times New Roman", serif', 'Times'], ['Arial, sans-serif', 'Arial'],
+  ['Verdana, sans-serif', 'Verdana'], ['"Courier New", monospace', 'Courier'],
+  ['Impact, fantasy', 'Impact'], ['"Comic Sans MS", cursive', 'Comic Sans'],
+  ['Consolas, monospace', 'Consolas'],
+];
+
+function textPanel(ed) {
+  const l = ed.active;
+  if (!l || !l.text) {
+    return panel('Text', { open: false },
+      hintRow('Pick the Text tool (T) and click on the canvas. A text layer stays editable \u2014 come back here to change the words, the font or the warp.'));
+  }
+  const t = { ...textDefaults(), ...l.text };
+  const set = (patch, live = false) => ed.setText(l.id, patch, { live });
+  const commit = (patch) => { set(patch, true); ed.commitProp(); };
+
+  const area = el('textarea', {
+    class: 'sp-textarea', rows: 3, spellcheck: 'false', value: t.content,
+  });
+  // `input` on every keystroke, committed on blur: one undo step per visit to
+  // the box rather than one per letter, the same deal a slider drag gets.
+  area.addEventListener('input', () => set({ content: area.value }, true));
+  area.addEventListener('change', () => { set({ content: area.value }, true); ed.commitProp(); });
+
+  const body = [
+    area,
+    row('Font', select({ get: () => t.fontFamily, options: FONTS, onCommit: (v) => set({ fontFamily: v }) })),
+    row('Weight', select({
+      get: () => String(t.fontWeight),
+      options: [['300', 'Light'], ['normal', 'Normal'], ['bold', 'Bold'], ['900', 'Black']],
+      onCommit: (v) => set({ fontWeight: v }),
+    })),
+    row('Style', select({
+      get: () => t.fontStyle, options: [['normal', 'Upright'], ['italic', 'Italic']],
+      onCommit: (v) => set({ fontStyle: v }),
+    })),
+    row('Colour', colorInput({
+      get: () => toHex(t.color),
+      onCommit: (hex) => { const c = parseHex(hex); if (c) set({ color: c.slice(0, 3) }); },
+    })),
+  ];
+  for (const [label, key, kind, ...rest] of TEXT_FIELDS) {
+    if (kind === 'num') {
+      const [min, max, step] = rest;
+      body.push(row(label, slider({
+        get: () => t[key], min, max, step,
+        onInput: (v) => set({ [key]: v }, true),
+        onCommit: (v) => commit({ [key]: v }),
+      })));
+    } else if (kind === 'bool') {
+      body.push(row('', checkbox({ get: () => !!t[key], label, onCommit: (v) => set({ [key]: v }) })));
+    } else if (kind === 'sel') {
+      body.push(row(label, select({
+        get: () => t[key], options: rest[0].map((v) => [v, v[0].toUpperCase() + v.slice(1)]),
+        onCommit: (v) => set({ [key]: v }),
+      })));
+    }
+  }
+
+  // Paragraph text wraps to a width; point text does not. One checkbox, because
+  // "box width 0 means no box" is the kind of API only its author remembers.
+  const para = t.boxWidth && t.boxWidth > 0;
+  body.push(row('', checkbox({
+    get: () => para, label: 'Wrap to a box',
+    onCommit: (v) => set({ boxWidth: v ? Math.max(40, Math.round(ed.doc.w / 2)) : null }),
+  })));
+  if (para) {
+    body.push(row('Box width', slider({
+      get: () => t.boxWidth, min: 20, max: ed.doc.w, step: 1,
+      onInput: (v) => set({ boxWidth: Math.round(v) }, true),
+      onCommit: (v) => commit({ boxWidth: Math.round(v) }),
+    })));
+  }
+
+  // Warp
+  const warp = t.warp || null;
+  body.push(row('Warp', select({
+    get: () => (warp ? warp.style : 'none'),
+    options: WARP_STYLES.map((v) => [v, v === 'none' ? 'None' : v.replace(/([A-Z])/g, ' $1').replace(/^./, (c) => c.toUpperCase())]),
+    onCommit: (v) => set({ warp: v === 'none' ? null : { ...warpDefaults(), ...(warp || {}), style: v } }),
+  })));
+  if (warp && warp.style !== 'none') {
+    for (const [label, key, kind, ...rest] of WARP_FIELDS) {
+      if (kind !== 'num') continue;
+      // Bend is clamped per style: inflate and twist stop being invertible at
+      // the end of the nominal range, and the rasteriser resamples through the
+      // inverse.
+      const [lo, hi] = key === 'bend' ? bendRange(warp.style) : [rest[0], rest[1]];
+      body.push(row(label, slider({
+        get: () => warp[key] || 0, min: lo, max: hi, step: 0.01,
+        onInput: (v) => set({ warp: { ...warp, [key]: v } }, true),
+        onCommit: (v) => commit({ warp: { ...warp, [key]: v } }),
+      })));
+    }
+  }
+
+  body.push(el('div', { class: 'sp-btn-row' },
+    btn('Rasterise', () => { ed.rasterizeText(l.id); toast('Text rasterised'); },
+      { title: 'Turn the words into pixels so they can be painted on' }),
+    btn('Centre', () => set({ x: Math.round(ed.doc.w / 2), y: Math.round(ed.doc.h / 2), align: 'center' }))));
+
+  return panel('Text', { open: true, note: `${t.fontSize}px` }, ...body);
 }
 
 // ------------------------------------------------------------ layer effects

@@ -778,6 +778,80 @@ add "a snapshot shares an effect's colour array" js/core/history.js \
   '    if (Array.isArray(v)) o[k] = v.map((x) => (isPlainObject(x) ? cloneEffect(x) : x));' \
   '    if (Array.isArray(v)) o[k] = v;' effects
 
+# ------------------------------------------------------------------- text.js
+add "tracking counted after the last character too" js/core/text.js \
+  '  const advance = (t) => (t.length ? measure(t) + track * (t.length - 1) : 0);' \
+  '  const advance = (t) => (t.length ? measure(t) + track * t.length : 0);' text
+
+add "character positions summed per glyph instead of per prefix" js/core/text.js \
+  '      const base = x + (k ? measure(prefix) + track * k : 0) + extraPerGap * gapsSeen;' \
+  '      const base = x + (k ? cps.slice(0, k).reduce((a, c) => a + measure(c), 0) + track * k : 0) + extraPerGap * gapsSeen;' text
+
+add "a trailing space decides where the line breaks" js/core/text.js \
+  "    if (line && advance(trial.replace(/\\s+\$/, '')) > width) {" \
+  '    if (line && advance(trial) > width) {' text
+
+add "the last line of a paragraph is justified" js/core/text.js \
+  "    if (s.align === 'justify' && !lastOfPara) {" \
+  "    if (s.align === 'justify' && true) {" text
+
+add "justify stretches every character, not the gaps" js/core/text.js \
+  "      if (cps[k] === ' ') gapsSeen++;" \
+  '      gapsSeen++;' text
+
+add "the box top is the baseline, not the baseline minus the ascent" js/core/text.js \
+  '    box: { x: bx, y: s.y - ascent, w: bw, h },' \
+  '    box: { x: bx, y: s.y, w: bw, h },' text
+
+add "paragraph spacing dropped" js/core/text.js \
+  '      if (l.para !== prevPara) y += s.paragraphSpacing;' \
+  '      if (l.para !== prevPara) y += 0;' text
+
+add "the first-line indent applied to every line" js/core/text.js \
+  '    const indent = (i === 0 || raw[i - 1].para !== l.para) ? s.firstLineIndent : 0;' \
+  '    const indent = s.firstLineIndent;' text
+
+add "a bend of zero is not exactly the identity" js/core/text.js \
+  '  if (bend) switch (style) {' \
+  '  if (true) switch (style) {' text
+
+add "the warp shears before the shape instead of after" js/core/text.js \
+  '  if (hz) x += hz * y * 0.5;
+  if (vt) y += vt * x * 0.5;' \
+  '  if (hz) x += hz * v * 0.5;
+  if (vt) y += vt * u * 0.5;' text
+
+add "the warp inverse takes undamped Newton steps" js/core/text.js \
+  '      if (r < r0) { u = nu; v = nv; r0 = r; moved = true; break; }' \
+  '      { u = nu; v = nv; r0 = r; moved = true; break; }' text
+
+add "the extent is not padded for an extremum between samples" js/core/text.js \
+  '  const pad = step / 2;' \
+  '  const pad = 0;' text
+
+add "a path clamps past its end instead of extending" js/core/text.js \
+  '  let i = 1;
+  while (i < n - 1 && acc[i] < t) i++;' \
+  '  let i = 1;
+  while (i < n - 1 && acc[i] < t) i++;
+  if (t > acc[n - 1]) return { x: path[n - 1].x, y: path[n - 1].y, angle: 0 };' text
+
+add "a glyph on a path is drawn from its left edge, not its centre" js/core/text.js \
+  '    const t = offset + (c.x - x0) + c.width / 2;' \
+  '    const t = offset + (c.x - x0);' text
+
+add "arc length measured as Manhattan distance" js/core/text.js \
+  '    acc.push(acc[i - 1] + Math.hypot(path[i].x - path[i - 1].x, path[i].y - path[i - 1].y));' \
+  '    acc.push(acc[i - 1] + Math.abs(path[i].x - path[i - 1].x) + Math.abs(path[i].y - path[i - 1].y));' text
+
+add "fisheye allowed past the bend where it stops inverting" js/core/text.js \
+  '  fisheye: [-0.9, 1],' \
+  '  fisheye: [-1, 1],' text
+
+add "wrapping never breaks an overlong word" js/core/text.js \
+  '    if (advance(word) > width && !line) {' \
+  '    if (false && !line) {' text
+
 # ---------------------------------------------------------------- runner
 
 BK=$(mktemp -d)
