@@ -126,11 +126,43 @@ reason to hand-roll those. Everything else — the compositor, the blend modes,
 the colour spaces, the brush engine, the filters, the resampler, the distance
 transform, the project format — is written here.
 
-Known limits, stated rather than implied: text is rasterised when placed rather
-than staying re-editable; there is no PSD import or export yet; Free Transform
-is Image Size and the rotate/flip commands rather than an interactive box; and
-the temperature/tint sliders in White Balance are a creative approximation, not
-a black-body curve.
+## What is not here yet
+
+Stated plainly, because a feature list that quietly omits things is worse than
+a short one. All of these were in the plan for this editor and none of them are
+in v1.0.0:
+
+- **Layer effects** — drop shadow, inner shadow, glow, stroke, colour and
+  gradient overlay, bevel and emboss. The engine has the exact distance field
+  they need and `fillOpacity` is already separate from `opacity` for them, but
+  nothing draws them.
+- **Re-editable text.** Text is rasterised where you click. The font, size and
+  weight are chosen before placing it and cannot be changed afterwards.
+- **Paths and the pen tool.** No bezier paths, no shape layers beyond the
+  rectangle and ellipse the shape tool fills, no path-to-selection.
+- **Interactive Free Transform.** Scale and rotate exist as Image Size and the
+  rotate/flip commands; there is no drag-handle box on the canvas.
+- **Liquify.** Twirl, pinch, spherize and wave are there as filters; the
+  interactive push/bloat/pucker brush is not.
+- **Content-aware fill and content-aware scale.** No PatchMatch inpainting and
+  no seam carving.
+- **PSD import or export**, and no GIF, TIFF, ICO or SVG export. Opening reads
+  anything the browser decodes (PNG, JPEG, WebP, GIF, BMP); saving is PNG,
+  JPEG, WebP, or the layered `.slipshop` project.
+- **Actions and a script panel.** Every edit is already a data op, which is
+  what a macro recorder would be built on, but there is no recorder and no
+  way to paste a list of ops in.
+- **Blend If** is implemented in the compositor and has no UI.
+- **16-bit documents** are supported by the engine — tiles, history, codecs —
+  and File > New always makes an 8-bit one.
+- **Workers.** Everything runs on the main thread. The engine was written so a
+  filter is a pure function over a tile, which is the hard part of moving it
+  off, but a large filter on a large image will still block the tab.
+
+One more thing that is an approximation rather than a gap: the temperature and
+tint sliders in White Balance are a creative curve, not a black-body one. They
+scale in linear light, which is where a light source's colour actually
+multiplies, but the coefficients are chosen to feel right rather than measured.
 
 ---
 

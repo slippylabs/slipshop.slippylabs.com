@@ -4,8 +4,16 @@
 // thing. Each of these was checked rather than assumed:
 //
 //  1. RADIUS. scipy derives the gaussian window from `truncate`; we derive it
-//     from ceil(3*sigma). At sigma 0.7 those give 2 and 3. scipy takes an
-//     explicit `radius`, so the oracle passes ours in and the windows match.
+//     from ceil(3*sigma). At sigma 0.7 those give 2 and 3, so scipy is given
+//     an explicit `radius`.
+//
+//     That radius is written out here as a LITERAL, not by calling
+//     gaussianRadius(). Passing the function under test into the reference
+//     made the two move together: breaking the radius rule changed our blur
+//     AND scipy's window by the same amount, the comparison still agreed, and
+//     the mutation control for it never fired. A reference configured by the
+//     code it is checking is not a reference. The rule is asserted separately,
+//     against the same literal.
 //  2. CORRELATE, NOT CONVOLVE. Every image editor's "convolution" is
 //     mathematically a correlation -- the kernel is NOT flipped. scipy has
 //     both, and picking the wrong one makes an asymmetric kernel like emboss
@@ -59,7 +67,9 @@ const MODES = [['clamp', 'nearest'], ['reflect', 'mirror'], ['wrap', 'grid-wrap'
 {
   for (const sigma of [0.5, 0.7, 1, 1.5, 2, 3.3, 7]) {
     const { k, r } = gaussianKernel(sigma);
-    eq(r, gaussianRadius(sigma), `sigma ${sigma}: the kernel uses the exported radius rule`);
+    // Against a literal, not against gaussianRadius -- see the note at the top.
+    eq(r, Math.max(1, Math.ceil(sigma * 3)), `sigma ${sigma}: the radius is ceil(3*sigma)`);
+    eq(r, gaussianRadius(sigma), `sigma ${sigma}: and the kernel agrees with the exported rule`);
     eq(k.length, r * 2 + 1, `sigma ${sigma}: kernel length matches its radius`);
     let s = 0;
     for (let i = 0; i < k.length; i++) s += k[i];
@@ -176,7 +186,7 @@ for (const [mine, theirs] of MODES) {
     const want = runPython(`
 from scipy.ndimage import gaussian_filter
 a = IN.reshape(${H}, ${W})
-OUT = gaussian_filter(a, sigma=${sigma}, mode=${JSON.stringify(theirs)}, cval=0.0, radius=${gaussianRadius(sigma)}).reshape(-1)
+OUT = gaussian_filter(a, sigma=${sigma}, mode=${JSON.stringify(theirs)}, cval=0.0, radius=${Math.max(1, Math.ceil(sigma * 3))}).reshape(-1)
 `, src, [H, W]);
     const d = worst(got, want);
     if (d.w > worstG) { worstG = d.w; whereG = `${mine} sigma ${sigma}`; }

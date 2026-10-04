@@ -150,6 +150,26 @@ function field(w, h, seed) {
   r = orient(r.data, r.w, r.h, 'rot90');
   eq(worst(r.data, src).w, 0, 'four 90-degree rotations are exactly the identity');
   eq(r.w, 16, 'and the size comes back');
+
+  // Four rotations returning to the start does NOT pin the direction: a plain
+  // transpose is its own inverse, so doing it four times is also the identity
+  // and the control for a wrong rot90 never fired. Pin where one corner goes.
+  const marked = new Float32Array(16 * 12 * 4);
+  marked[0] = 1; marked[3] = 1;                       // a single marker at (0,0)
+  const once = orient(marked, 16, 12, 'rot90');
+  eq(once.w, 12, 'rot90 swaps the axes');
+  eq(once.h, 16, 'both of them');
+  // Clockwise with y down: the top-left corner goes to the TOP-RIGHT.
+  const at = (im, w, x, y) => im[(y * w + x) * 4];
+  eq(at(once.data, once.w, once.w - 1, 0), 1, 'rot90 sends the top-left pixel to the top-right');
+  eq(at(once.data, once.w, 0, 0), 0, 'and not to the top-left');
+  // ...and two rot90s must equal one rot180.
+  const twice = orient(once.data, once.w, once.h, 'rot90');
+  const half = orient(marked, 16, 12, 'rot180');
+  eq(worst(twice.data, half.data).w, 0, 'rot90 twice is exactly rot180');
+  const thrice = orient(twice.data, twice.w, twice.h, 'rot90');
+  const anti = orient(marked, 16, 12, 'rot270');
+  eq(worst(thrice.data, anti.data).w, 0, 'and rot90 three times is exactly rot270');
   // Flips are involutions.
   for (const op of ['flipH', 'flipV', 'rot180']) {
     const a = orient(src, 16, 12, op);

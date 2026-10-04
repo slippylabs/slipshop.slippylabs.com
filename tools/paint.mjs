@@ -643,4 +643,165 @@ OUT = flood(a, (${sy}, ${sx}), connectivity=1).astype(np.float64).reshape(-1)
   ok(threw, 'and so does asking for its radius');
 }
 
+// ------------------------------ gaps the mutation controls found
+// Each of these exists because a control did NOT fire.
+
+{
+  // POLYGON VERTEX DOUBLE-COUNTING. The scanline is half-open in y so a vertex
+  // shared by two edges is counted once. Every shape above has its vertices on
+  // integer y, and the sub-samples sit at y + 0.125/0.375/0.625/0.875 -- so no
+  // vertex was ever ON a sample line and the half-open rule was never
+  // exercised. These vertices land exactly on one.
+  // The tolerance is 5%, not exact, and that is the honest accuracy of four
+  // vertical sub-samples when an edge does not line up with the sample grid:
+  // the first sample's quarter-pixel band sticks out past the top of the
+  // shape, which costs this triangle about 3%. The bug being hunted is not a
+  // percent -- double-counting a vertex flips the inside/outside parity for
+  // the REST of that scanline, so half a row fills or empties at once.
+  for (const yOff of [0.125, 0.375, 0.625, 0.875]) {
+    const tri = [[0, yOff], [16, yOff], [8, 8 + yOff]];
+    const out = polygonCoverage(tri);
+    let a = 0;
+    for (const v of out.cov) a += v;
+    ok(Math.abs(a - 64) / 64 < 0.05,
+      `a triangle whose apex sits exactly on a scanline sample (y+${yOff}) has its area within 5% (got ${a.toFixed(1)}, true 64)`);
+  }
+  // A diamond: two vertices on sample lines, so the parity has two chances to
+  // go wrong, and its left and right edges are both non-horizontal.
+  const diamond = [[8, 0.375], [16, 8.375], [8, 16.375], [0, 8.375]];
+  let da = 0;
+  for (const v of polygonCoverage(diamond).cov) da += v;
+  ok(Math.abs(da - 128) / 128 < 0.05,
+    `a diamond with both apexes on scanline samples has its area within 5% (got ${da.toFixed(1)}, true 128)`);
+  // And no coverage value may exceed 1, which a double-counted span does.
+  for (const yOff of [0.125, 0.625]) {
+    const out = polygonCoverage([[0, yOff], [16, yOff], [8, 8 + yOff]]);
+    ok(out.cov.every((v) => v <= 1 + 1e-6), `y+${yOff}: no pixel is covered more than once`);
+  }
+
+  // THE ONE THAT PINS THE HALF-OPEN RULE. A single area cannot do it: four
+  // vertical sub-samples bias an apex-up triangle to 66 and an apex-down one
+  // to 62 against a true 64, and double-counting the shared vertex also lands
+  // on 66 -- within any tolerance loose enough to accept the bias.
+  //
+  // But the bias is equal and OPPOSITE for a shape and its vertical mirror, so
+  // the two must average to the truth. They do (66 + 62 = 128); with the
+  // vertex counted twice the apex-down triangle also reads 66 and the pair
+  // averages to 66. That is the signature.
+  const up = polygonCoverage([[0, 0.125], [16, 0.125], [8, 8.125]]);
+  const down = polygonCoverage([[8, 0.125], [16, 8.125], [0, 8.125]]);
+  let au = 0, ad = 0;
+  for (const v of up.cov) au += v;
+  for (const v of down.cov) ad += v;
+  eq((au + ad) / 2, 64, `a triangle and its vertical mirror average to the true area (${au.toFixed(1)} and ${ad.toFixed(1)}) -- the sub-sampling bias cancels, and a double-counted vertex breaks that`, 0.25);
+}
+
+{
+  // THE WAND'S ANTIALIASING. Counting pixels above 0.5 cannot tell a soft edge
+  // from a hard one, so "the ramp has no antialiasing" changed nothing. A
+  // gradient gives the ramp something to do.
+  const W = 64, H = 8;
+  const px = new Float32Array(W * H * 4);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const p = (y * W + x) * 4;
+    px[p] = x / (W - 1); px[p + 1] = 0.2; px[p + 2] = 0.4; px[p + 3] = 1;
+  }
+  const soft = magicWand(px, W, H, 0, 4, { tolerance: 30, contiguous: true, antialias: true });
+  let partial = 0, full = 0;
+  for (const v of soft.cov) { if (v > 0.02 && v < 0.98) partial++; else if (v >= 0.98) full++; }
+  ok(partial > 10, `an antialiased wand on a gradient gives partial coverage (${partial} partly selected)`);
+  ok(full > 0, 'and full coverage near the clicked colour');
+  const hard = magicWand(px, W, H, 0, 4, { tolerance: 30, contiguous: true, antialias: false });
+  let hardPartial = 0;
+  for (const v of hard.cov) if (v > 0.02 && v < 0.98) hardPartial++;
+  eq(hardPartial, 0, 'and with antialias off every pixel is fully in or fully out');
+}
+
+{
+  // THE DIAGONAL TURN POLICY. The exact-area oracle holds whichever turn is
+  // taken -- the outline is geometrically right either way -- so the area
+  // cannot pin the choice. The CONTOUR COUNT can.
+  const W = 60, H = 40;
+  const s = new Surface(W, H, 1, 8);
+  const cov = new Float32Array(W * H);
+  for (let i = 0; i < 12; i++) cov[(5 + i) * W + (5 + i)] = 1;
+  s.writeRect(rect(0, 0, W, H), cov);
+  eq(marchingAnts(s).length, 12,
+    'a corner-touching diagonal chain draws as one loop per pixel -- the clockwise turn at a diagonal vertex');
+}
+
+{
+  // A ZERO-LENGTH DRAG, in EVERY shape. Only 'linear' was tested, and the
+  // divide-by-zero guard lives in each branch separately.
+  for (const shape of GRADIENT_SHAPES) {
+    const out = renderGradient(rect(0, 0, 8, 8), twoStop([0, 0, 0], [1, 1, 1]),
+      { shape, x0: 4, y0: 4, x1: 4, y1: 4, dither: false });
+    ok(out.every((v) => Number.isFinite(v)), `${shape}: a zero-length drag stays finite`);
+    ok(out.every((v) => v >= 0 && v <= 1), `${shape}: and in range`);
+  }
+}
+
+{
+  // FLOW ACCUMULATION, exactly. The scrub test only checked that it approaches
+  // 1 without passing it -- and plain addition ALSO stops at 1, because the
+  // accumulator is a 16-bit surface that clamps on write. The arithmetic has
+  // to be checked at a value that is not near the clamp.
+  const st = new Stroke(64, 64, { size: 24, hardness: 1, smoothing: 0 });
+  const flow = 0.2;
+  for (let i = 0; i < 5; i++) st.blit(32, 32, 24, 0, flow);
+  const got = st.cov.getPixel(32, 32)[0];
+  const want = 1 - Math.pow(1 - flow, 5);          // 0.67232
+  eq(got, want, `five overlapping stamps at flow ${flow} give 1-(1-f)^5 = ${want.toFixed(5)}, not 5f`, 3e-4);
+  ok(Math.abs(got - flow * 5) > 0.1, 'which is a long way from simple addition');
+}
+
+{
+  // ADD NOISE must be position-keyed. The locality sweep's 0.08 bound was
+  // looser than the noise's own amplitude, so a buffer-order stream slipped
+  // through. Compare a sub-region against the same rows of the whole, exactly.
+  const W = 32, H = 24;
+  const base = new Float32Array(W * H * 4);
+  for (let i = 0; i < W * H; i++) { base[i * 4] = 0.5; base[i * 4 + 1] = 0.5; base[i * 4 + 2] = 0.5; base[i * 4 + 3] = 1; }
+  const whole = base.slice();
+  applyFilter('addNoise', { amount: 0.3, seed: 5 }, whole, W, H);
+  const y0 = 7, y1 = 19;
+  const sub = new Float32Array(W * (y1 - y0) * 4);
+  sub.set(base.subarray(y0 * W * 4, y1 * W * 4));
+  applyFilter('addNoise', { amount: 0.3, seed: 5, originX: 0, originY: y0 }, sub, W, y1 - y0);
+  let w = 0;
+  for (let i = 0; i < W * (y1 - y0) * 4; i++) w = Math.max(w, Math.abs(sub[i] - whole[y0 * W * 4 + i]));
+  ok(w === 0, `Add Noise filtered as a region is IDENTICAL to the same rows of the whole (worst ${w})`);
+  // ...and the grain is really VARIED, not one value applied everywhere. A
+  // per-pixel generator reseeded with the same constant produces identical
+  // noise at every pixel, which is position-independent and so passes the
+  // comparison above while being obviously not noise.
+  const vals = new Set();
+  for (let i = 0; i < W * H; i++) vals.add(Math.round(whole[i * 4] * 1000));
+  ok(vals.size > 50, `the grain varies across the image (${vals.size} distinct values), not one offset applied everywhere`);
+  let moved = 0;
+  for (let i = 0; i < W * H; i++) if (Math.abs(whole[i * 4] - 0.5) > 0.01) moved++;
+  ok(moved > W * H * 0.5, 'and it actually added noise');
+  // Neighbouring pixels must differ, which uniform noise cannot manage.
+  let same = 0;
+  for (let i = 1; i < W * H; i++) if (whole[i * 4] === whole[(i - 1) * 4]) same++;
+  ok(same < W * H * 0.1, 'and adjacent pixels differ');
+}
+
+{
+  // MOSAIC must average in PREMULTIPLIED form. With straight colour, a block
+  // that is half transparent takes the colour of pixels nobody can see.
+  const W = 8, H = 8;
+  const buf = new Float32Array(W * H * 4);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const p = (y * W + x) * 4;
+    if (y < 4) { buf[p] = 1; buf[p + 1] = 0; buf[p + 2] = 0; buf[p + 3] = 0; }   // transparent RED
+    else { buf[p] = 0; buf[p + 1] = 0; buf[p + 2] = 1; buf[p + 3] = 1; }          // opaque BLUE
+  }
+  applyFilter('mosaic', { size: 8 }, buf, W, H);
+  // One cell covers the lot: the visible colour is blue, at half coverage.
+  ok(buf[2] > 0.9 && buf[0] < 0.1,
+    `a mosaic cell takes the colour of the pixels you can SEE (got r=${buf[0].toFixed(3)} b=${buf[2].toFixed(3)})`);
+  eq(buf[3], 0.5, 'and averages the alpha', 0.01);
+}
+
 done('selections, distances, gradients, the brush engine and all 31 filters hold their properties');

@@ -51,7 +51,19 @@ export function compositeInto(dst, layers, doc, r, opts = {}) {
   let clipBase = null;
 
   for (const layer of layers) {
-    if (!layer.visible) continue;
+    if (!layer.visible) {
+      // A hidden layer still ends the clipping group it was the base of, and
+      // it ends it EMPTY: in Photoshop, hiding the base of a clipping group
+      // hides everything clipped to it. Leaving the previous clipBase in place
+      // would have the layers above clip to some unrelated layer further down,
+      // and setting it to null would unclip them entirely -- both worse, and
+      // both invisible until a stack happens to have a hidden base.
+      if (!layer.clipping) {
+        clipBase = clipBase && clipBase.length === n ? clipBase : new Float32Array(n);
+        clipBase.fill(0);
+      }
+      continue;
+    }
 
     if (layer.type === 'adjustment') {
       applyAdjustmentLayer(dst, layer, doc, r, opts, clipBase);

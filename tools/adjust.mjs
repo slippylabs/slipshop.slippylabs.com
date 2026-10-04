@@ -460,4 +460,142 @@ for (const kind of ADJUST_KINDS) {
   ok(isIdentityCurve([[1, 1], [0, 0]]), 'and it sorts first');
 }
 
+// ------------------------------- gaps the mutation controls found
+// Each of these exists because a control did NOT fire: the oracle had no data
+// that could tell the bug apart from the fix.
+
+{
+  // CURVES. The monotonicity sweep above feeds only MONOTONE point sets, and
+  // for monotone data the averaged tangents can never oppose their secant --
+  // so the Fritsch-Carlson sign clamp is unreachable and removing it changed
+  // nothing. Non-monotone data is what needs it.
+  let overshoot = 0;
+  for (let t = 0; t < 300; t++) {
+    const n = 3 + Math.floor(rnd() * 5);
+    const xs = [0];
+    for (let i = 1; i < n - 1; i++) xs.push(rnd());
+    xs.push(1);
+    xs.sort((a, b) => a - b);
+    const ys = xs.map(() => rnd());            // deliberately NOT sorted
+    const pts = xs.map((x, i) => [x, ys[i]]);
+    const f = monotoneSpline(pts);
+    // Between two adjacent control points the curve must stay within their
+    // own two values. A spline that overshoots there is the wobble that puts
+    // a band of inverted tones in a photograph.
+    for (let i = 0; i < pts.length - 1; i++) {
+      const lo = Math.min(ys[i], ys[i + 1]) - 1e-9;
+      const hi = Math.max(ys[i], ys[i + 1]) + 1e-9;
+      for (let k = 0; k <= 40; k++) {
+        const x = pts[i][0] + ((pts[i + 1][0] - pts[i][0]) * k) / 40;
+        const v = f(x);
+        if (v < lo || v > hi) overshoot++;
+      }
+    }
+  }
+  eq(overshoot, 0, 'a NON-monotone point set never overshoots between its own control points (300 sets)');
+
+  // A FLAT segment must come out exactly flat. Random floats never repeat, so
+  // nothing in the sweep above had one, and the "zero the tangents on a flat
+  // secant" rule was unreachable.
+  const flat = monotoneSpline([[0, 0], [0.3, 0.6], [0.7, 0.6], [1, 1]]);
+  let flatErr = 0;
+  for (let k = 0; k <= 200; k++) {
+    const x = 0.3 + (0.4 * k) / 200;
+    flatErr = Math.max(flatErr, Math.abs(flat(x) - 0.6));
+  }
+  ok(flatErr < 1e-9, `a flat segment between two equal control points is exactly flat (worst ${flatErr.toExponential(2)})`);
+}
+
+{
+  // BRIGHTNESS must not clip. An offset keeps the curve monotone, so the
+  // monotonicity sweep could not see it -- what it destroys is DISTINCTNESS:
+  // +0.5 as an offset maps everything above 0.5 to pure white and those
+  // highlights are gone for good.
+  const N = 256;
+  const ramp = new Float32Array(N * 4);
+  for (let i = 0; i < N; i++) { ramp[i * 4] = ramp[i * 4 + 1] = ramp[i * 4 + 2] = i / (N - 1); ramp[i * 4 + 3] = 1; }
+  for (const b of [0.5, -0.5, 0.8]) {
+    const buf = ramp.slice();
+    applyAdjust('brightnessContrast', { brightness: b, contrast: 0 }, buf, N, 1);
+    const distinct = new Set();
+    for (let i = 0; i < N; i++) distinct.add(Math.round(buf[i * 4] * 10000));
+    ok(distinct.size > N * 0.9,
+      `brightness ${b} keeps ${distinct.size} of ${N} tones distinct -- it compresses towards the end rather than clipping`);
+    ok(buf[0] >= 0 && buf[(N - 1) * 4] <= 1, `brightness ${b} stays in range`);
+  }
+}
+
+{
+  // POSTERIZE must land on the exact lattice k/(n-1). Counting distinct values
+  // was not enough: quantising with n instead of n-1 can still produce n
+  // distinct values, just at the wrong places, and the darkest band then never
+  // reaches black.
+  for (const n of [2, 3, 5, 9]) {
+    const N = 1024;
+    const ramp = new Float32Array(N * 4);
+    for (let i = 0; i < N; i++) { ramp[i * 4] = i / (N - 1); ramp[i * 4 + 3] = 1; }
+    applyAdjust('posterize', { levels: n }, ramp, N, 1);
+    let offLattice = 0;
+    for (let i = 0; i < N; i++) {
+      const v = ramp[i * 4];
+      const k = Math.round(v * (n - 1));
+      if (Math.abs(v - k / (n - 1)) > 1e-6) offLattice++;
+    }
+    eq(offLattice, 0, `posterize ${n}: every output sits exactly on k/${n - 1}`);
+  }
+}
+
+{
+  // LEVELS with a zero or inverted input span. Asserting only "finite and in
+  // range" was not enough: dividing by zero gives +/-Infinity, which clamps to
+  // 1 and 0 and looks perfectly well-behaved. What it must actually do is act
+  // as a threshold at that point.
+  const N = 64;
+  const ramp = new Float32Array(N * 4);
+  for (let i = 0; i < N; i++) { ramp[i * 4] = i / (N - 1); ramp[i * 4 + 3] = 1; }
+  const zero = ramp.slice();
+  applyAdjust('levels', { master: { inBlack: 0.5, inWhite: 0.5, gamma: 1, outBlack: 0, outWhite: 1 } }, zero, N, 1);
+  let wrong = 0;
+  for (let i = 0; i < N; i++) {
+    const want = i / (N - 1) >= 0.5 ? 1 : 0;
+    if (Math.abs(zero[i * 4] - want) > 1e-6) wrong++;
+  }
+  eq(wrong, 0, 'levels with a ZERO input span is a clean threshold at that point, not a divide by zero');
+
+  // Master AFTER per-channel. Nothing set both before, so the order was free.
+  const both = ramp.slice();
+  applyAdjust('levels', {
+    master: { inBlack: 0, inWhite: 1, gamma: 2, outBlack: 0, outWhite: 1 },
+    channels: { r: { inBlack: 0.25, inWhite: 1, gamma: 1, outBlack: 0, outWhite: 1 } },
+  }, both, N, 1);
+  // per-channel first: v = (x - 0.25)/0.75, then master gamma: v^(1/2)
+  let orderErr = 0;
+  for (let i = 0; i < N; i++) {
+    const x = i / (N - 1);
+    const perCh = clamp01((x - 0.25) / 0.75);
+    const want = Math.pow(perCh, 1 / 2);
+    orderErr = Math.max(orderErr, Math.abs(both[i * 4] - want));
+  }
+  ok(orderErr < 1e-4, `levels runs the per-channel curve FIRST and the master second (worst ${orderErr.toExponential(2)})`);
+}
+
+{
+  // BLACK & WHITE must leave a grey alone. A grey has no hue, so no hue slider
+  // has anything to say about it -- and the anchors above all use fully
+  // saturated primaries, which cannot tell a formula that respects saturation
+  // from one that ignores it.
+  const N = 64;
+  const ramp = new Float32Array(N * 4);
+  for (let i = 0; i < N; i++) {
+    const v = i / (N - 1);
+    ramp[i * 4] = ramp[i * 4 + 1] = ramp[i * 4 + 2] = v;
+    ramp[i * 4 + 3] = 1;
+  }
+  const before = ramp.slice();
+  applyAdjust('blackWhite', { reds: 3, yellows: -2, greens: 3, cyans: -2, blues: 3, magentas: -2 }, ramp, N, 1);
+  let w = 0;
+  for (let i = 0; i < N; i++) w = Math.max(w, Math.abs(ramp[i * 4] - before[i * 4]));
+  ok(w < 1e-6, `Black & White leaves a grey ramp untouched whatever the hue sliders say (worst ${w.toExponential(2)})`);
+}
+
 done(`${ADJUST_KINDS.length} adjustments: identity, alpha, range, monotonicity and non-destructive equivalence all hold`);

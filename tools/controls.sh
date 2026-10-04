@@ -152,11 +152,18 @@ add "tileOrigin disagrees with tileIndex" js/core/tiles.js \
   '  tileOrigin(idx) { return [(idx % this.tx) * TILE, Math.floor(idx / this.tx) * TILE]; }' \
   '  tileOrigin(idx) { return [Math.floor(idx / this.tx) * TILE, (idx % this.tx) * TILE]; }' tiles
 
-add "writeRect allocates a tile before checking the overlap is non-empty" js/core/tiles.js \
-  '        if (ix1 <= ix0 || iy1 <= iy0) continue;
-        const t = this.ensure(tx, ty);' \
-  '        const t = this.ensure(tx, ty);
-        if (ix1 <= ix0 || iy1 <= iy0) continue;' tiles
+# NOTE: "writeRect allocates before checking the overlap" lived here and could
+# never fire. tileSpan is derived from the already-clipped rect, so every tile
+# it yields really does overlap and the guard is pure defence in depth. A
+# control that cannot fail is noise, so it was replaced by this one, which is
+# observable: without the clip, a write entirely outside the document reaches
+# tileSpan, gets null, and throws.
+add "writeRect does not clip to the document before spanning tiles" js/core/tiles.js \
+  '  writeRect(r, src) {
+    const c = rectIntersect(r, this.bounds);
+    if (rectEmpty(c)) return c;' \
+  '  writeRect(r, src) {
+    const c = r;' tiles
 
 add "clearRect deletes a tile it only partly covers" js/core/tiles.js \
   '        if (ix1 - ix0 === TILE && iy1 - iy0 === TILE) {' \
@@ -253,8 +260,18 @@ add "fillOpacity is ignored" js/core/composite.js \
   '  const o = layer.opacity;' composite
 
 add "an invisible layer is composited anyway" js/core/composite.js \
-  '    if (!layer.visible) continue;' \
-  '    if (false) continue;' composite
+  '    if (!layer.visible) {
+      // A hidden layer still ends the clipping group it was the base of, and' \
+  '    if (false) {
+      // A hidden layer still ends the clipping group it was the base of, and' composite
+
+add "a hidden clipping base leaves the previous base in place" js/core/composite.js \
+  '        clipBase = clipBase && clipBase.length === n ? clipBase : new Float32Array(n);
+        clipBase.fill(0);
+      }
+      continue;' \
+  '      }
+      continue;' composite
 
 # --------------------------------------------------------------- history.js
 add "touch() re-captures a tile it already has (losing the original)" js/core/history.js \
@@ -354,9 +371,15 @@ add "posterize quantises with n steps instead of n-1" js/core/adjust.js \
   '  const lut = buildLut((x) => round(x * (n - 1)) / (n - 1));' \
   '  const lut = buildLut((x) => round(x * n) / n);' adjust
 
-add "levels divides by a zero span" js/core/adjust.js \
-  '    let v = span === 0 ? (x >= inWhite ? 1 : 0) : (x - inBlack) / span;' \
-  '    let v = (x - inBlack) / span;' adjust
+# NOTE: "levels divides by a zero span" lived here and could never fire. With
+# span 0 the division gives +/-Infinity, which clamp01 turns into exactly the 1
+# and 0 the explicit branch produces; the only NaN is at x == inWhite exactly,
+# and the 16384-entry LUT samples i/16383, which never lands on a slider value.
+# The guard stays -- it is what makes the function safe to call directly rather
+# than through the LUT -- but a control for it would be theatre.
+add "levels applies the gamma the wrong way round" js/core/adjust.js \
+  '  const g = 1 / Math.max(1e-4, gamma);' \
+  '  const g = Math.max(1e-4, gamma);' adjust
 
 add "the master levels curve runs before the per-channel one" js/core/adjust.js \
   '    return buildLut((x) => fm(fc(x)));' \

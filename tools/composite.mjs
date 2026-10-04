@@ -102,29 +102,50 @@ function buildStack(seed) {
         const { layer, d } = makeLayer(depth + 1);
         kids.push(layer); kidDesc.push(d);
       }
+      const gVisible = rnd() > 0.1;
       const g = new Layer({
         type: 'group', blend: passThrough ? 'pass-through' : blend,
         opacity: passThrough ? 1 : opacity, children: kids, clipping,
+        visible: gVisible,
       });
       if (hasMask && !passThrough) { g.mask = maskFrom(maskData()); }
       return {
         layer: g,
         d: {
           type: 'group', isolated: g.isolated, blend: cssName(g.effectiveBlend),
-          opacity: g.opacity, clipping, children: kidDesc,
+          opacity: g.opacity, clipping, visible: gVisible, children: kidDesc,
           mask: g.mask ? Array.from(g.mask.readRect(rect(0, 0, W, H))) : null,
         },
       };
     }
 
     const data = pixels();
-    const l = new Layer({ type: 'raster', blend, opacity, clipping, surface: surfaceFrom(data) });
+    // visible and fillOpacity are varied here because two mutation controls --
+    // "an invisible layer is composited anyway" and "fillOpacity is ignored" --
+    // did not fire without them. Every stack kept both at their defaults, so
+    // the compositor could have ignored either and no check would have moved.
+    const visible = rnd() > 0.12;
+    // fillOpacity is chosen so that opacity * fillOpacity stays at or above
+    // 0.1. Below that the comparison stops being about us: a canvas stores
+    // PREMULTIPLIED colour, so at a combined alpha of 0.0375 a float16 store
+    // loses about 2.6% of the colour on the way in and back out, and the
+    // reference's own precision dominates the result. The engine's behaviour
+    // at low alpha is covered properly by blend.mjs, which tests down to
+    // 0.0625 with a conditioning-aware allowance.
+    const fillChoices = [1, 1, 1, 0.6, 0.25].filter((f) => opacity * f >= 0.1);
+    const fillOpacity = f16round(fillChoices[Math.floor(rnd() * fillChoices.length)] ?? 1);
+    const l = new Layer({ type: 'raster', blend, opacity, clipping, visible, fillOpacity, surface: surfaceFrom(data) });
     let mk = null;
     if (hasMask) { mk = maskData(); l.mask = maskFrom(mk); }
     return {
       layer: l,
       d: {
-        type: 'raster', blend: cssName(blend), opacity, clipping,
+        type: 'raster', blend: cssName(blend), clipping, visible,
+        // The canvas has one knob where we have two: globalAlpha. Fill opacity
+        // scales the layer's own pixels and opacity scales the whole layer,
+        // and with no layer effects in play their product is the coverage --
+        // which is exactly what the compositor computes.
+        opacity: opacity * fillOpacity,
         // read back THROUGH the surface, so both sides see the same quantised
         // values -- comparing against the pre-quantisation floats would be
         // measuring the 16-bit storage, not the compositor
@@ -177,6 +198,12 @@ function keepWhere(layer, alphaSrc) {
 function drawList(dst, list) {
   let clipBase = null;
   for (const L of list) {
+    if (L.visible === false) {
+      // A hidden base ends its clipping group EMPTY -- an empty canvas, so
+      // destination-in removes everything clipped to it.
+      if (!L.clipping) clipBase = mk();
+      continue;
+    }
     if (L.type === 'group' && !L.isolated) { drawList(dst, L.children); if (!L.clipping) clipBase = null; continue; }
     let lc;
     if (L.type === 'group') { lc = mk(); drawList(lc.g, L.children); }
@@ -240,6 +267,14 @@ for (let s = 0; s < STACKS; s++) {
     }
   }
   if (w > worstAll) { worstAll = w; whereAll = where; }
+  if (bad !== 0 && process.env.DEBUG_STACK) {
+    const flat = [];
+    const walk = (list, d) => list.forEach((l) => { flat.push(`${' '.repeat(d)}${l.type} blend=${l.blend} op=${l.opacity.toFixed(2)} fill=${l.fillOpacity.toFixed(2)} vis=${l.visible} clip=${l.clipping} mask=${!!l.mask}`); if (l.children) walk(l.children, d + 2); });
+    walk(built[s].doc.layers, 0);
+    console.log(`  --- stack ${s} ---`);
+    for (const line of flat) console.log('   ', line);
+    console.log('    worst:', where);
+  }
   ok(bad === 0, `stack ${s} (${built[s].doc.layerCount} layers): ${bad} of ${N * 4} channels differ from the browser`);
 }
 note(`worst = ${worstAll.toFixed(3)} x tolerance ${worstAll > 0.9 ? `(${whereAll})` : ''}`);
@@ -298,6 +333,57 @@ for (let s = 0; s < 4; s++) {
     }
   }
   eq(bad, 0, `stack ${s}: compositing a sub-rect matches the same region of the whole`);
+}
+
+// ------------------------------------------- awkward clipping arrangements
+// Hand-built, because a random generator will not reliably produce a hidden
+// layer that is also the base of a clipping group -- and that arrangement is
+// exactly where the clip base can be left pointing at the wrong layer.
+{
+  const mk = (fn) => {
+    const sfc = new Surface(8, 8, 4, 16);
+    const buf = new Float32Array(8 * 8 * 4);
+    fn(buf);
+    sfc.writeRect(rect(0, 0, 8, 8), buf);
+    return sfc;
+  };
+  const solid = (c) => mk((b) => { for (let i = 0; i < 64; i++) { b[i * 4] = c[0]; b[i * 4 + 1] = c[1]; b[i * 4 + 2] = c[2]; b[i * 4 + 3] = 1; } });
+  const leftHalf = (c) => mk((b) => {
+    for (let y = 0; y < 8; y++) for (let x = 0; x < 4; x++) {
+      const p = (y * 8 + x) * 4;
+      b[p] = c[0]; b[p + 1] = c[1]; b[p + 2] = c[2]; b[p + 3] = 1;
+    }
+  });
+
+  const build = (baseVisible) => {
+    const d = new Doc({ w: 8, h: 8 });
+    d.layers.push(
+      new Layer({ type: 'raster', name: 'bottom', surface: solid([0, 0, 1]) }),       // blue, full
+      new Layer({ type: 'raster', name: 'base', visible: baseVisible, surface: leftHalf([0, 1, 0]) }),  // green, left half
+      new Layer({ type: 'raster', name: 'clipped', clipping: true, surface: solid([1, 0, 0]) }),        // red, clipped
+    );
+    return d;
+  };
+
+  const shown = compositeDoc(build(true), rect(0, 0, 8, 8));
+  // left half: red clipped to the green base; right half: the blue bottom.
+  ok(shown[(0 * 8 + 1) * 4] > 0.9 && shown[(0 * 8 + 1) * 4 + 1] < 0.1,
+    'with a visible base, the clipped layer shows inside it');
+  ok(shown[(0 * 8 + 6) * 4 + 2] > 0.9,
+    'and not outside it -- the bottom layer shows through');
+
+  const hidden = compositeDoc(build(false), rect(0, 0, 8, 8));
+  let leaked = 0;
+  for (let i = 0; i < 64; i++) if (hidden[i * 4] > 0.1) leaked++;
+  eq(leaked, 0, 'HIDING the base hides everything clipped to it -- the red never appears');
+  ok(hidden[0] < 0.1 && hidden[2] > 0.9, 'and the layer below shows everywhere instead');
+
+  // A clipping layer with nothing below it to clip to must not clip to
+  // whatever happened to be composited before, which is nothing here.
+  const orphan = new Doc({ w: 8, h: 8 });
+  orphan.layers.push(new Layer({ type: 'raster', name: 'orphan', clipping: true, surface: solid([1, 0, 1]) }));
+  const o = compositeDoc(orphan, rect(0, 0, 8, 8));
+  ok(o[0] > 0.9 && o[2] > 0.9, 'a clipping layer with no base below it draws normally rather than vanishing');
 }
 
 done(`the layer stack matches the browser's own compositor (worst ${worstAll.toFixed(2)}x tolerance)`);

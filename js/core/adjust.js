@@ -77,6 +77,11 @@ function levelChannel(inBlack, inWhite, gamma, outBlack, outWhite) {
   return (x) => {
     // A zero or inverted input span is a legitimate thing to drag to: it
     // means "everything becomes the output black or white", not NaN.
+    //
+    // Through the LUT this is belt and braces -- the division would give
+    // +/-Infinity, which clamps to the same 1 and 0, and the single NaN at
+    // x == inWhite is never sampled. It matters if the function is ever
+    // called directly, which is why it stays.
     let v = span === 0 ? (x >= inWhite ? 1 : 0) : (x - inBlack) / span;
     v = clamp01(v);
     if (gamma !== 1) v = Math.pow(v, g);
