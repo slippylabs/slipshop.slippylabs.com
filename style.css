@@ -2037,8 +2037,19 @@ body.sp-app .scanlines { display: none; }
    than moving the shared block. */
 .sp-status { padding-right: 86px; }
 @media (max-width: 560px) {
-  .sp-status { padding-right: 78px; }
+  /* The phone link is a 44px tap target, 82px wide from the screen edge. The
+     padding alone never kept the readouts clear: every child is flex 0 0 auto,
+     so on a 390px phone the row (347px) ran straight through the padding and
+     "5.0 MB" sat under PRIVACY. Drop the two readouts a phone needs least and
+     let the cursor position give way rather than overflow. */
+  .sp-status { padding-right: 88px; gap: 8px; }
+  #st-mem, #st-pick { display: none; }
+  .sp-status > #st-pos { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 }
+
+/* The document title is a bare span in a stretch-aligned flex row, so it was
+   the full bar height with its text pinned to the top edge, above the menus. */
+.sp-top > #doc-title { display: flex; align-items: center; }
 
 /* ---- layer effects ------------------------------------------------------ */
 .sp-fx-list { display: flex; flex-direction: column; gap: 1px; margin-bottom: 6px; }
