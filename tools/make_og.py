@@ -3,9 +3,14 @@
 (640x360 WebP) -- both photographs of the real editor, mid-edit.
 
 The document in the shot is built BY THE ENGINE, in the page: clouds, a
-gradient, a couple of adjustment layers and a brush stroke. That keeps the art
-honest (it is what the tool actually produces) and it exercises the same code
-the oracles check, so a broken filter shows up as a broken picture.
+gradient, a shape layer, warped text wearing two layer effects, a brush stroke
+and an adjustment layer. That keeps the art honest (it is what the tool
+actually produces) and it exercises the same code the oracles check, so a
+broken filter shows up as a broken picture.
+
+Because the scene is deterministic, re-running this on an unchanged engine
+rewrites the same bytes -- a capture that produces no diff means the art is
+already current, not that the run failed.
 
     tools/make_og.py [--banner ~/art.slippylabs.com/shots/slipshop.webp]
 """
@@ -91,6 +96,34 @@ async () => {
   }
   applyStroke(paint, st, r, { color: ed.fg, opacity: 0.9 });
 
+  // A SHAPE LAYER: the sun, behind the hills. Still editable -- kind, box and
+  // params are all the layer stores, and the geometry is built from them.
+  const sun = ed.addShapeLayer({
+    kind: 'ellipse', box: { x: 950, y: 430, w: 260, h: 260 },
+    fill: [1, 0.86, 0.55], fillAlpha: 0.9, strokeEnabled: false,
+  });
+  // Under the hills, over the sky: a shape layer is an ordinary layer.
+  {
+    const list = ed.doc.layers;
+    const at = list.indexOf(sun);
+    if (at >= 0) { list.splice(at, 1); list.splice(list.indexOf(hills), 0, sun); }
+  }
+
+  // RE-EDITABLE TEXT, warped, wearing two LAYER EFFECTS. The three things
+  // v1.1.0 added, in one object: the words are still words, the arc is a live
+  // warp, and the shadow and stroke are non-destructive.
+  const title = ed.addTextLayer(170, 250, {
+    content: 'golden hour', fontSize: 112, fontWeight: 'bold', tracking: 4,
+    color: [1, 0.97, 0.9],
+    warp: { style: 'arc', bend: 0.42, horizontal: 0, vertical: 0 },
+  });
+  ed.setLayerProp(title.id, 'effects', [
+    { type: 'dropShadow', enabled: true, color: [0.15, 0.05, 0.02], opacity: 0.55,
+      angle: 50, distance: 14, spread: 0.1, size: 18, blend: 'multiply' },
+    { type: 'stroke', enabled: true, color: [0.35, 0.12, 0.04], opacity: 0.85,
+      size: 3, position: 'outside', blend: 'normal' },
+  ]);
+
   // A non-destructive Curves layer on top, so the panel shows one.
   ed.doc.layers.push(new Layer({
     type: 'adjustment', name: 'Curves',
@@ -98,7 +131,7 @@ async () => {
   }));
 
   ed.doc.name = 'golden-hour';
-  ed.activeId = paint.id;
+  ed.activeId = title.id;
   ed.history.clear();
   S.setTool('brush');
   ed.invalidate();
