@@ -358,6 +358,96 @@ function sliceRect(buf, from, to) {
   ok(counted > 20 && sameSign === 0, `and in opposite directions (${sameSign} of ${counted} agreed)`);
 }
 
+// --------------------------------------------- push is along, shift is across
+
+{
+  // `push` moves content the way the pointer went; `shift` moves it at right
+  // angles to the drag, which is what makes it a sideways nudge rather than a
+  // second forward warp. Both are checked against the DRAG direction, because
+  // "it moved something" is true of either and says nothing.
+  for (const [dx, dy] of [[8, 0], [0, 6], [5, -5], [-3, 7]]) {
+    const len = Math.hypot(dx, dy);
+    const push = new Mesh(W, H, 4);
+    applyBrush(push, 'push', { x: 48, y: 36, radius: 24, strength: 1, dx, dy });
+    const shift = new Mesh(W, H, 4);
+    applyBrush(shift, 'shift', { x: 48, y: 36, radius: 24, strength: 1, dx, dy });
+    let checked = 0, pushOff = 0, shiftOff = 0, magOff = 0;
+    for (let i = 0; i < push.length; i++) {
+      const pm = Math.hypot(push.dx[i], push.dy[i]);
+      if (pm < 1e-6) continue;
+      checked++;
+      // The mesh holds the INVERSE map, so pushing content along the drag
+      // means the sample offset is exactly ANTI-parallel to it.
+      const cross = push.dx[i] * dy - push.dy[i] * dx;
+      if (Math.abs(cross) > 1e-5) pushOff++;
+      if (push.dx[i] * dx + push.dy[i] * dy > 0) pushOff++;
+      // Shift's offset is perpendicular to the drag: the DOT product is zero.
+      const dot = shift.dx[i] * dx + shift.dy[i] * dy;
+      if (Math.abs(dot) > 1e-5) shiftOff++;
+      // ...and the same magnitude, since it is the same weight turned sideways.
+      if (Math.abs(Math.hypot(shift.dx[i], shift.dy[i]) - pm) > 1e-6) magOff++;
+    }
+    ok(checked > 20, `drag ${dx},${dy}: ${checked} nodes moved`);
+    eq(pushOff, 0, `drag ${dx},${dy}: push is anti-parallel to the drag (${pushOff} nodes were not)`);
+    eq(shiftOff, 0, `drag ${dx},${dy}: shift is perpendicular to it (${shiftOff} were not)`);
+    eq(magOff, 0, `drag ${dx},${dy}: and the same size (${magOff} were not)`);
+  }
+}
+
+// -------------------------------------------------------- smooth in detail
+
+{
+  // Smooth averages a node with its four neighbours. Two things have to hold
+  // and neither shows on an empty or a uniform mesh, which is why both were
+  // missed first time: a uniform field is already smooth, so there is nothing
+  // to do, and an empty one has nothing to protect.
+  const build = () => {
+    const m = new Mesh(W, H, 4);
+    // A single spike, which is the only field where "averaged with the
+    // neighbours" has an unmistakable answer.
+    for (let j = 0; j < m.ny; j++) for (let i = 0; i < m.nx; i++) m.dx[j * m.nx + i] = 0;
+    return m;
+  };
+  const cx = 48, cy = 36;
+  const spikeAt = (m) => {
+    let best = -1, bd = Infinity;
+    for (let j = 0; j < m.ny; j++) {
+      for (let i = 0; i < m.nx; i++) {
+        const d = Math.hypot(m.nodeX(i) - cx, m.nodeY(j) - cy);
+        if (d < bd) { bd = d; best = j * m.nx + i; }
+      }
+    }
+    return best;
+  };
+
+  // It must average with the neighbours of the ORIGINAL field. Smoothing in
+  // place feeds each new value into the next node's average, which turns a
+  // symmetric blur into a directional smear -- so a symmetric spike must stay
+  // symmetric.
+  const m = build();
+  const k = spikeAt(m);
+  m.dx[k] = 10;
+  applyBrush(m, 'smooth', { x: cx, y: cy, radius: 30, strength: 1 });
+  const left = m.dx[k - 1], right = m.dx[k + 1];
+  const up = m.dx[k - m.nx], down = m.dx[k + m.nx];
+  eq(left, right, `smooth keeps a symmetric spike symmetric left-to-right (${left} vs ${right})`, 1e-6);
+  eq(up, down, `and top-to-bottom (${up} vs ${down})`, 1e-6);
+  ok(left > 0.5, `and it spread the spike outward (${left.toFixed(3)})`);
+  ok(m.dx[k] < 10, `while taking the peak down (${m.dx[k].toFixed(3)})`);
+
+  // The freeze mask holds a node still through a smooth, which needs a mesh
+  // where smoothing WOULD change it -- a non-uniform one.
+  const f = build();
+  const kf = spikeAt(f);
+  f.dx[kf] = 10;
+  f.dx[kf + 1] = -4;
+  f.freeze[kf] = 1;
+  const peakBefore = f.dx[kf];
+  applyBrush(f, 'smooth', { x: cx, y: cy, radius: 30, strength: 1 });
+  eq(f.dx[kf], peakBefore, 'a frozen node is not smoothed');
+  ok(Math.abs(f.dx[kf + 1] - (-4)) > 0.1, `while its unfrozen neighbour is (${f.dx[kf + 1].toFixed(3)})`);
+}
+
 // ---------------------------------------------------- the composition rule
 
 {
@@ -436,6 +526,25 @@ function sliceRect(buf, from, to) {
   const reach = meshReach(m);
   ok(jump < 0.5, `the displacement field is continuous (worst 0.1px step gives ${jump.toFixed(4)}, over a reach of ${reach})`);
   note(`continuity: a 0.1px move changes the displacement by at most ${jump.toFixed(4)}`);
+
+  // Sampling OUTSIDE the mesh is clamped to its edge. Nothing in the editor
+  // asks for that -- the warp only ever samples inside the document -- but a
+  // mesh lookup that ran off the end would index past the array and return
+  // NaN, and a NaN displacement rasterises silently to nothing.
+  const corner = [0, 0], outside = [0, 0];
+  for (const [qx, qy, nx, ny] of [
+    [-500, -500, 0, 0], [W + 500, -500, W, 0],
+    [-500, H + 500, 0, H], [W + 500, H + 500, W, H],
+    [-1, 36, 0, 36], [W + 1, 36, W, 36],
+  ]) {
+    m.sample(nx, ny, corner);
+    m.sample(qx, qy, outside);
+    ok(Number.isFinite(outside[0]) && Number.isFinite(outside[1]),
+      `sampling at (${qx},${qy}) is finite`);
+    eq(outside[0], corner[0], `and clamps to the edge value at (${nx},${ny}) in x`, 1e-9);
+    eq(outside[1], corner[1], `and in y`, 1e-9);
+  }
+  ok(Number.isFinite(m.sampleFreeze(-999, -999)), 'and so is the freeze mask outside the mesh');
 
   // The reach is a real bound: nothing samples from further away than it says.
   let far = 0;
@@ -586,9 +695,17 @@ OUT = map_coordinates(img, co, order=1, mode='nearest')
 
 {
   // Premultiplied sampling, or the colour of transparent pixels bleeds into
-  // visible ones. The classic demonstration: an opaque WHITE disc on a
-  // transparent black background. Warped without premultiplying, the rim
-  // picks up the black and the disc gets a dark fringe.
+  // visible ones.
+  //
+  // The transparent background has to be a DIFFERENT COLOUR, and that is the
+  // whole trick. The obvious test -- a white disc on transparent BLACK -- does
+  // not fail without premultiplication: the straight interpolation gives
+  // colour 0.5 at alpha 0.5, and dividing by alpha on the way out puts it
+  // right back to white. It only shows when the invisible colour is one that
+  // cannot be mistaken for a shade of the visible one.
+  //
+  // So: a BLUE disc on transparent GREEN. Premultiplied, the rim stays blue.
+  // Straight, the green bleeds in and the rim comes out cyan.
   const m = new Mesh(W, H, 4);
   applyBrush(m, 'twirlCW', { x: 48, y: 36, radius: 25, strength: 0.6 });
   const src = new Float32Array(W * H * 4);
@@ -596,19 +713,23 @@ OUT = map_coordinates(img, co, order=1, mode='nearest')
     for (let x = 0; x < W; x++) {
       const p = (y * W + x) * 4;
       if (Math.hypot(x - 48, y - 36) <= 20) {
-        src[p] = 1; src[p + 1] = 1; src[p + 2] = 1; src[p + 3] = 1;
+        src[p] = 0; src[p + 1] = 0; src[p + 2] = 1; src[p + 3] = 1;   // opaque blue
+      } else {
+        src[p] = 0; src[p + 1] = 1; src[p + 2] = 0; src[p + 3] = 0;   // transparent GREEN
       }
-      // everything else stays [0, 0, 0, 0] -- transparent BLACK
     }
   }
   const out = warpBuffer(src, rect(0, 0, W, H), rect(0, 0, W, H), m);
-  let darkest = 1;
+  let worstGreen = 0, visible = 0;
   for (let i = 0; i < W * H; i++) {
     const p = i * 4;
-    // Wherever anything is visible at all, it has to still be white.
-    if (out[p + 3] > 0.02) darkest = Math.min(darkest, out[p]);
+    if (out[p + 3] <= 0.02) continue;
+    visible++;
+    worstGreen = Math.max(worstGreen, out[p + 1]);
   }
-  ok(darkest > 0.98, `a warped white cut-out keeps no dark fringe (darkest visible ${darkest.toFixed(4)})`);
+  ok(visible > 500, `${visible} pixels of the warped disc are visible`);
+  ok(worstGreen < 0.01,
+    `the invisible green never bleeds into the blue disc (worst green ${worstGreen.toFixed(4)})`);
 }
 
 done('liquify: an empty mesh is bit-exact, dabs compose, and the resampling matches scipy');

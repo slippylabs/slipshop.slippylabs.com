@@ -109,6 +109,36 @@ const inkOf = (cov) => { let s = 0; for (const v of cov) s += v; return s; };
     const perArc = flattenPath(e, tol)[0].length / 4;
     ok(perArc < 4096, `tol ${tol} on an r=${rad} arc converges in ${perArc} segments, under the 4096 cap`);
   }
+  // That check is ONE-SIDED. It fails when the cap binds too high, and stays
+  // true when the cap is LOWERED -- a cap of 6 gives at most 64 segments,
+  // comfortably "under 4096", while quietly abandoning the tolerance. So
+  // measure the thing the cap exists to protect: on a curve far bigger than
+  // the 200px ones above, the flattened polyline must still lie within tol of
+  // the real curve. A 4000-unit quarter-turn at tol 0.05 needs ~400 segments,
+  // which is past 2^6 and nowhere near 2^12.
+  {
+    const a = anchor(0, 0); a.outX = 4000; a.outY = 0;
+    const b = anchor(4000, 4000); b.inX = 0; b.inY = 4000;
+    const big = { closed: false, anchors: [a, b] };
+    for (const tol of [1, 0.05]) {
+      const poly = flattenSubpath(big, tol);
+      let dev = 0;
+      for (let i = 0; i <= 2000; i++) {
+        const q = cubicPoint([a.x, a.y], [a.outX, a.outY], [b.inX, b.inY], [b.x, b.y], i / 2000);
+        let d = Infinity;
+        for (let k = 0; k < poly.length - 1; k++) {
+          const u = poly[k], w = poly[k + 1];
+          const dx = w[0] - u[0], dy = w[1] - u[1];
+          const l2 = dx * dx + dy * dy;
+          const t = l2 > 0 ? Math.max(0, Math.min(1, ((q[0] - u[0]) * dx + (q[1] - u[1]) * dy) / l2)) : 0;
+          d = Math.min(d, Math.hypot(q[0] - (u[0] + dx * t), q[1] - (u[1] + dy * t)));
+        }
+        dev = Math.max(dev, d);
+      }
+      ok(dev <= tol * 1.05,
+        `a 4000-unit curve at tol ${tol} stays within tolerance (${dev.toFixed(4)}, ${poly.length} pts)`);
+    }
+  }
   note(`flattening: worst deviation ${worstDev.toFixed(4)} at tolerance ${worstTol}`);
 }
 
@@ -122,12 +152,38 @@ const inkOf = (cov) => { let s = 0; for (const v of cov) s += v; return s; };
   const fwd = pathArea(r), rev = pathArea(reversePath(r));
   eq(fwd, -rev, 'reversing a path negates its area');
   ok(fwd !== 0, 'and the area was not zero to begin with');
+  // A rectangle has no HANDLES, so the area pair above says nothing about
+  // whether reversing swapped in/out. Walk a curved open subpath backwards:
+  // the flattened geometry must be the same points in the opposite order. If
+  // the handles are left as they were, the curve bulges the other way and the
+  // interior points move while the endpoints stay put.
+  {
+    const a0 = anchor(0, 0); a0.outX = 80; a0.outY = -60;
+    const a1 = anchor(100, 0); a1.inX = 20; a1.inY = 60;
+    const curved = { subpaths: [{ closed: false, anchors: [a0, a1] }] };
+    const f = flattenPath(curved, 0.01)[0];
+    const g = flattenPath(reversePath(curved), 0.01)[0];
+    eq(g.length, f.length, 'reversing a curve keeps the point count');
+    let worstRev = 0;
+    for (let i = 0; i < f.length; i++) {
+      worstRev = Math.max(worstRev,
+        Math.hypot(f[i][0] - g[g.length - 1 - i][0], f[i][1] - g[g.length - 1 - i][1]));
+    }
+    ok(worstRev < 1e-9, `a reversed curve is the same curve backwards (worst ${worstRev.toExponential(2)})`);
+  }
 
   // A regular polygon: (1/2) n r^2 sin(2 pi / n), exactly.
   for (const sides of [3, 4, 5, 6, 8, 12, 24]) {
     const p = shapePath('polygon', { x: 0, y: 0, w: 200, h: 200 }, { sides });
     const want = 0.5 * sides * 100 * 100 * Math.sin(TAU / sides);
     eq(Math.abs(pathArea(p)), want, `a ${sides}-gon of radius 100 encloses ${want.toFixed(2)}`, 1e-8);
+    // Area alone cannot see ORIENTATION -- it is rotation-invariant, so a
+    // polygon built from angle 0 instead of -pi/2 encloses exactly the same
+    // amount and the area check above passes on a shape that is visibly
+    // turned. Pin the first vertex: straight UP from the centre.
+    const ring = flattenPath(p)[0];
+    eq(ring[0][0], 100, `a ${sides}-gon's first vertex is straight up (x)`, 1e-9);
+    eq(ring[0][1], 0, `a ${sides}-gon's first vertex is straight up (y)`, 1e-9);
   }
 
   // A star: n triangles of outer radius R and inner radius r, twice over.
@@ -138,6 +194,22 @@ const inkOf = (cov) => { let s = 0; for (const v of cov) s += v; return s; };
       // same included angle pi/n: area = n * R * r * sin(pi / n).
       const want = points * 100 * (100 * innerRatio) * Math.sin(Math.PI / points);
       eq(Math.abs(pathArea(p)), want, `a ${points}-point star at ratio ${innerRatio}`, 1e-8);
+      // ...and the area is SYMMETRIC in the two radii: n*R*r*sin(pi/n) is the
+      // same figure if every outer vertex is given the inner radius and vice
+      // versa. That swap turns a star inside out and the area check cannot see
+      // it, so walk the radii: they must alternate starting at the OUTER one,
+      // with the first point straight up.
+      const ring = flattenPath(p)[0];
+      eq(ring.length, points * 2, `a ${points}-point star has ${points * 2} vertices`);
+      const radii = ring.map((q) => Math.hypot(q[0] - 100, q[1] - 100));
+      let alt = true;
+      for (let i = 0; i < radii.length; i++) {
+        const expect = i % 2 ? 100 * innerRatio : 100;
+        if (Math.abs(radii[i] - expect) > 1e-8) alt = false;
+      }
+      ok(alt, `a ${points}-point star at ratio ${innerRatio} starts OUTER and alternates`);
+      eq(ring[0][0], 100, `and its first point is straight up (x)`, 1e-9);
+      eq(ring[0][1], 0, `and its first point is straight up (y)`, 1e-9);
     }
   }
 
@@ -256,6 +328,15 @@ const inkOf = (cov) => { let s = 0; for (const v of cov) s += v; return s; };
   const a = inkOf(strokeCoverage(ring, { width: 6, cap: 'butt', join: 'miter' }).cov);
   const b = inkOf(strokeCoverage(ring, { width: 6, cap: 'square', join: 'miter' }).cov);
   eq(a, b, 'a closed path has no ends, so the cap style makes no difference', 1e-7);
+  // Coverage alone is too weak here: a cap emitted at the seam of a closed
+  // ring lands inside geometry the join already covers, so the INK is
+  // identical while the outline is carrying extra rings it should never have
+  // built. Count the rings instead -- that is where the mistake shows.
+  const ringsFor = (cap) => strokeOutline(ring, { width: 6, join: 'miter', cap }).length;
+  const nButt = ringsFor('butt');
+  for (const cap of CAPS) {
+    eq(ringsFor(cap), nButt, `a closed path emits no cap ring for cap=${cap}`);
+  }
   // A mitred stroke round a rectangle is the frame between two rectangles.
   eq(a, (80 + 6) * (60 + 6) - (80 - 6) * (60 - 6),
     'a mitred stroke round a rectangle is the frame between the two offsets', 1e-6);
@@ -441,6 +522,21 @@ const inkOf = (cov) => { let s = 0; for (const v of cov) s += v; return s; };
       }
     }
   }
+  // The smooth cubic 'S' takes its FIRST control point by reflecting the
+  // previous segment's second control point through the current point. The
+  // loop above only asserts the numbers are finite, which a parser that
+  // copied the previous control point instead of reflecting it also satisfies
+  // -- and that parser puts a visible kink at every S joint.
+  {
+    const sp2 = parseSvgPath('M 0 0 C 10 0 20 10 20 20 S 40 30 40 40').subpaths[0];
+    const joint = sp2.anchors[1];
+    eq(joint.x, 20, 'the S joint sits at the end of the preceding cubic (x)', 1e-9);
+    eq(joint.y, 20, 'the S joint sits at the end of the preceding cubic (y)', 1e-9);
+    // previous c2 is (20,10); reflected through (20,20) is (20,30).
+    eq(joint.outX, 20, "the S command reflects the previous control point (x)", 1e-9);
+    eq(joint.outY, 30, "the S command reflects the previous control point (y)", 1e-9);
+  }
+
   // A quadratic converted to a cubic is the SAME curve, not an approximation:
   // the control points a third of the way out are exact.
   {
@@ -652,6 +748,33 @@ const inkOf = (cov) => { let s = 0; for (const v of cov) s += v; return s; };
   let any2 = 0;
   for (let i = 0; i < b.w * b.h; i++) if (zero[i * 4 + 3] > 0) any2++;
   eq(any2, 0, 'and a fill opacity of zero draws nothing either');
+  // The fill must be keyed off the FILL flag. Switching the fill off while
+  // the stroke stays on is the only configuration that can see this: with
+  // both enabled a fill block that tests the stroke's flag behaves
+  // identically, which is why the counts above cannot catch it.
+  {
+    const strokeOnly = renderShape({ ...sh, fillEnabled: false, strokeEnabled: true }, b);
+    // The centre of the rectangle is well inside the 4px stroke, so with the
+    // fill off it has to be empty.
+    const cx = Math.round(b.w / 2), cy = Math.round(b.h / 2);
+    const mid = (cy * b.w + cx) * 4;
+    eq(strokeOnly[mid + 3], 0, 'fill off, stroke on: the interior is empty', 1e-9);
+    let redPx = 0;
+    for (let i = 0; i < b.w * b.h; i++) {
+      if (strokeOnly[i * 4 + 3] > 0.5 && strokeOnly[i * 4] > 0.5 && strokeOnly[i * 4 + 2] < 0.5) redPx++;
+    }
+    eq(redPx, 0, 'and not one pixel of fill colour was drawn');
+  }
+  // Fill opacity has to SCALE the coverage, and only an intermediate value
+  // shows that. At 0 the `fillAlpha > 0` guard above skips the fill block
+  // entirely, so a renderer that dropped the alpha multiply still draws
+  // nothing and the zero case passes.
+  for (const fa of [0.25, 0.5, 0.75]) {
+    const faded = renderShape({ ...sh, strokeEnabled: false, fillAlpha: fa }, b);
+    const cx = Math.round(b.w / 2), cy = Math.round(b.h / 2);
+    const mid = (cy * b.w + cx) * 4;
+    eq(faded[mid + 3], fa, `a fill opacity of ${fa} scales the alpha it writes`, 1e-6);
+  }
   // An empty path draws nothing and does not throw.
   eq(renderShape({ ...shapeDefaults(), path: { subpaths: [] } }, b).some((v) => v !== 0), false,
     'an empty path renders an empty buffer');

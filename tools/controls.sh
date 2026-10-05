@@ -861,8 +861,14 @@ add "flatness measured to the chord's midpoint, not to the line" js/core/path.js
   return Math.max(Math.hypot(p1[0] - mx, p1[1] - my), Math.hypot(p2[0] - mx, p2[1] - my)) / 8;' path
 
 add "subdivision stops one level too early" js/core/path.js \
-  '  if (depth > 18 || flatness(p0, p1, p2, p3) <= tol) {' \
-  '  if (depth > 18 || flatness(p0, p1, p2, p3) <= tol * 4) {' path
+  '  if (depth >= 12 || flatness(p0, p1, p2, p3) <= tol) {' \
+  '  if (depth >= 12 || flatness(p0, p1, p2, p3) <= tol * 4) {' path
+
+# The depth cap itself: too low and the tolerance stops being honoured on a
+# large arc, which is visible faceting.
+add "the subdivision depth cap is too low to converge" js/core/path.js \
+  '  if (depth >= 12 || flatness(p0, p1, p2, p3) <= tol) {' \
+  '  if (depth >= 6 || flatness(p0, p1, p2, p3) <= tol) {' path
 
 add "a closed subpath repeats its first point" js/core/path.js \
   '  if (sp.closed) out.pop();                 // the wrap point' \
@@ -1010,6 +1016,119 @@ add "several rings rasterised one at a time, so joins seam" js/core/select.js \
   '      for (const points of rs.slice(0, 1)) {
         const n = points.length;' path
 
+# --------------------------------------------------------------- liquify.js
+add "the mesh grid is one node short, so the far edge extrapolates" js/core/liquify.js \
+  '    this.nx = Math.ceil(w / this.step) + 1;
+    this.ny = Math.ceil(h / this.step) + 1;' \
+  '    this.nx = Math.ceil(w / this.step);
+    this.ny = Math.ceil(h / this.step);' liquify
+
+add "the last mesh node is not pinned to the far edge" js/core/liquify.js \
+  '  nodeX(i) { return Math.min(i * this.step, this.w); }
+  nodeY(j) { return Math.min(j * this.step, this.h); }' \
+  '  nodeX(i) { return i * this.step; }
+  nodeY(j) { return j * this.step; }' liquify
+
+add "the falloff is a linear ramp, so every dab leaves a crease" js/core/liquify.js \
+  '  const u = 1 - t * t;
+  return u * u;' \
+  '  return 1 - t;' liquify
+
+add "the falloff is not clamped outside the brush" js/core/liquify.js \
+  '  if (t >= 1) return 0;' \
+  '  if (t >= 1e9) return 0;' liquify
+
+add "bloat and pucker are the same sign" js/core/liquify.js \
+  "        const s = tool === 'bloat' ? -w : w;" \
+  '        const s = w;' liquify
+
+add "push moves the sample the same way as the pointer" js/core/liquify.js \
+  "        if (tool === 'push') { bx = -mx * w; by = -my * w; }" \
+  "        if (tool === 'push') { bx = mx * w; by = my * w; }" liquify
+
+add "shift goes along the drag instead of across it" js/core/liquify.js \
+  '        else { bx = my * w; by = -mx * w; }' \
+  '        else { bx = mx * w; by = my * w; }' liquify
+
+add "both twirls turn the same way" js/core/liquify.js \
+  "        const ang = (tool === 'twirlCW' ? -1 : 1) * w * Math.PI * 0.5;" \
+  '        const ang = w * Math.PI * 0.5;' liquify
+
+add "dabs are ADDED instead of composed" js/core/liquify.js \
+  '      oldAt(nx + bx, ny + by, tmp);
+      mesh.dx[k] = bx + tmp[0];
+      mesh.dy[k] = by + tmp[1];' \
+  '      oldAt(nx, ny, tmp);
+      mesh.dx[k] = bx + tmp[0];
+      mesh.dy[k] = by + tmp[1];' liquify
+
+add "the freeze mask is ignored by the displacing tools" js/core/liquify.js \
+  '      const w = falloff(dist / radius) * strength * (1 - mesh.freeze[k]);' \
+  '      const w = falloff(dist / radius) * strength;' liquify
+
+add "the freeze mask is ignored by smooth" js/core/liquify.js \
+  '        const w = falloff(Math.hypot(nx - x, ny - y) / radius) * strength
+          * (1 - mesh.freeze[j * mesh.nx + i]);' \
+  '        const w = falloff(Math.hypot(nx - x, ny - y) / radius) * strength;' liquify
+
+add "smooth reads the mesh it is writing to" js/core/liquify.js \
+  '    const sx = mesh.dx.slice(), sy = mesh.dy.slice();' \
+  '    const sx = mesh.dx, sy = mesh.dy;' liquify
+
+add "reconstruct scales up instead of down" js/core/liquify.js \
+  '        mesh.dx[k] *= 1 - w;
+        mesh.dy[k] *= 1 - w;' \
+  '        mesh.dx[k] *= 1 + w;
+        mesh.dy[k] *= 1 + w;' liquify
+
+add "thaw adds to the freeze mask instead of removing" js/core/liquify.js \
+  "        mesh.freeze[k] = tool === 'freeze'
+          ? Math.min(1, mesh.freeze[k] + w)
+          : Math.max(0, mesh.freeze[k] - w);" \
+  '        mesh.freeze[k] = Math.min(1, mesh.freeze[k] + w);' liquify
+
+add "the brush rect is not clipped to the mesh" js/core/liquify.js \
+  '  const i0 = Math.max(0, Math.floor((x - radius) / step));' \
+  '  const i0 = Math.floor((x - radius) / step);' liquify
+
+add "the mesh sample is not clamped at the edges" js/core/liquify.js \
+  '    const gx = clamp(x / this.step, 0, this.nx - 1);
+    const gy = clamp(y / this.step, 0, this.ny - 1);
+    const i0 = Math.floor(gx), j0 = Math.floor(gy);' \
+  '    const gx = x / this.step;
+    const gy = y / this.step;
+    const i0 = Math.floor(gx), j0 = Math.floor(gy);' liquify
+
+add "the bilinear weights do not sum to one" js/core/liquify.js \
+  '    const w01 = (1 - fx) * fy, w11 = fx * fy;' \
+  '    const w01 = fy, w11 = fx * fy;' liquify
+
+add "the warp does not premultiply, so a cut-out picks up a fringe" js/core/liquify.js \
+  '    pre[p] = src[p] * a; pre[p + 1] = src[p + 1] * a; pre[p + 2] = src[p + 2] * a;' \
+  '    pre[p] = src[p]; pre[p + 1] = src[p + 1]; pre[p + 2] = src[p + 2];' liquify
+
+add "the warp samples at the pixel corner, not its centre" js/core/liquify.js \
+  '    const docY = dr.y + y + 0.5;' \
+  '    const docY = dr.y + y;' liquify
+
+add "the displacement sign is flipped when sampling" js/core/liquify.js \
+  '      const sx = docX + d[0] - sr.x;
+      const sy = docY + d[1] - sr.y;' \
+  '      const sx = docX - d[0] - sr.x;
+      const sy = docY - d[1] - sr.y;' liquify
+
+add "the reach is the brush radius instead of the displacement" js/core/liquify.js \
+  '    const d = Math.abs(mesh.dx[i]) + Math.abs(mesh.dy[i]);' \
+  '    const d = 0;' liquify
+
+add "a mesh loaded at the wrong size is applied anyway" js/core/liquify.js \
+  '  if (o.dx && o.dx.length === m.length) m.dx.set(o.dx);' \
+  '  if (o.dx) m.dx.set(o.dx.slice(0, m.length));' liquify
+
+add "a zero-strength dab still warps" js/core/liquify.js \
+  '  const strength = p.strength === undefined ? 0.5 : clamp01(p.strength);' \
+  '  const strength = p.strength === undefined ? 0.5 : Math.max(0.01, clamp01(p.strength));' liquify
+
 # ---------------------------------------------------------------- runner
 
 BK=$(mktemp -d)
@@ -1045,8 +1164,21 @@ PY
   fi
   ran=$((ran + 1))
   printf '%-56s ' "${name:0:56}"
-  if node "tools/$test.mjs" >/dev/null 2>&1; then
+  # The oracle is run under a timeout. A re-introduced bug does not always make
+  # a check FAIL -- it can make the oracle never finish, and without a cap that
+  # wedges the whole suite instead of scoring one control. One of these (the
+  # empty-dash control, which makes dashPolyline loop on an all-zero pattern)
+  # held a run at 93% of a core for six hours and took the tree hostage with
+  # its mutation still applied. A hang is a detection: the bug changed
+  # observable behaviour, so it counts as caught, but it is labelled so a
+  # genuinely slow oracle is not mistaken for a real catch.
+  timeout "${CTL_TIMEOUT:-120}" node "tools/$test.mjs" >/dev/null 2>&1
+  rc=$?
+  if [ "$rc" -eq 0 ]; then
     echo "MISSED"
+  elif [ "$rc" -eq 124 ]; then
+    echo "caught (hang)"
+    caught=$((caught + 1))
   else
     echo "caught"
     caught=$((caught + 1))
