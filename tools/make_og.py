@@ -7,7 +7,7 @@ gradient, a couple of adjustment layers and a brush stroke. That keeps the art
 honest (it is what the tool actually produces) and it exercises the same code
 the oracles check, so a broken filter shows up as a broken picture.
 
-    tools/make_og.py [--banner ~/projects.slippylabs.com/shots/slipshop.webp]
+    tools/make_og.py [--banner ~/art.slippylabs.com/shots/slipshop.webp]
 """
 import argparse
 import functools
