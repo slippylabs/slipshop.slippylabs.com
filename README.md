@@ -213,5 +213,5 @@ multiplies, but the coefficients are chosen to feel right rather than measured.
 
 ---
 
-Part of [Slippy Labs](https://slippylabs.com). Every tool is indexed at
-[projects.slippylabs.com](https://projects.slippylabs.com).
+Part of [Slippy Labs](https://slippylabs.com). This one is indexed at
+[art.slippylabs.com](https://art.slippylabs.com).
