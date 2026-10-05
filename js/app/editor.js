@@ -598,6 +598,15 @@ export class Editor {
     this.history.begin('Shape layer', this.doc);
     const loc = this.doc.locate(this.activeId);
     const spec = { ...shapeDefaults(), fill: [...this.fg], ...shape };
+    // Build the geometry NOW. renderShape draws nothing at all when
+    // path.subpaths is empty, and shapeDefaults() starts it empty -- callers
+    // pass kind/box/params, not a path. Without this a new shape layer is
+    // added, named and selected, and is completely invisible until something
+    // happens to call setShape (which does build it), which looks like the
+    // shape tool is broken rather than like one missing line.
+    if (spec.box && !(spec.path && spec.path.subpaths && spec.path.subpaths.length)) {
+      spec.path = shapePath(spec.kind, spec.box, spec.params || {});
+    }
     const l = new Layer({
       type: 'shape',
       name: (spec.kind || 'Shape').replace(/^./, (c) => c.toUpperCase()),

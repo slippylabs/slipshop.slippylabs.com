@@ -648,7 +648,11 @@ def main():
         drag(pg, [(100, 100), (300, 260)])
         ok(wait_for(pg, "window.__slipshop.ed.active.type === 'shape'"),
            "dragging the shape tool makes a shape layer")
-        ok(pg.evaluate("!!window.__slipshop.ed.active.shape.path"), "with a path on it")
+        # Not `!!path` -- shapeDefaults() hands out { subpaths: [] }, which is
+        # truthy and draws nothing. Count the subpaths, which is the thing that
+        # decides whether renderShape emits a single pixel.
+        ok(pg.evaluate("(window.__slipshop.ed.active.shape.path.subpaths || []).length > 0"),
+           "with real geometry on it, not just an empty path object")
         star = pg.evaluate("window.__slipshop.pixel(200, 180)")
         ok(star[0] > 0.9 and star[1] < 0.2, f"and it is painted in the foreground colour {star}")
 
@@ -665,6 +669,29 @@ def main():
         pg.evaluate("const e=window.__slipshop.ed; e.setShape(e.activeId, { params: { ...e.active.shape.params, points: 12 } })")
         twelve = shape_ink()
         ok(twelve != five, f"editing the point count redraws the shape ({five} -> {twelve} pixels)")
+
+        # The MENU route, not the drag route. addShapeLayer is what Layer >
+        # shape and the project loader both call, and it builds its own
+        # geometry; the shape tool happened to supply a path of its own, so a
+        # drag could succeed while every menu-added shape came out invisible.
+        # It runs AFTER the point-count check and puts the previous layer back:
+        # adding a layer makes it active, and the checks around here all read
+        # ed.active, so leaving an ellipse selected silently retargets them.
+        added = pg.evaluate("""(() => {
+          const e = window.__slipshop.ed;
+          const was = e.activeId;
+          const l = e.addShapeLayer({ kind: 'ellipse', box: { x: 40, y: 40, w: 120, h: 80 } });
+          const d = e.doc;
+          const px = l.surface.readRect({ x: 0, y: 0, w: d.w, h: d.h });
+          let ink = 0;
+          for (let i = 0; i < d.w * d.h; i++) if (px[i * 4 + 3] > 0.5) ink++;
+          const out = { subpaths: (l.shape.path.subpaths || []).length, ink };
+          e.removeLayer(l.id);
+          e.activeId = was;
+          return out;
+        })()""")
+        ok(added["subpaths"] > 0, "a menu-added shape layer builds its geometry")
+        ok(added["ink"] > 1000, f"and actually renders ({added['ink']} px of ink)")
         # A stroke in the background colour appears outside the fill.
         pg.evaluate("const e=window.__slipshop.ed; e.setShape(e.activeId, { strokeEnabled: true, stroke: [0,0,1], strokeWidth: 6 })")
         ok(wait_for(pg, "window.__slipshop.ed.active.shape.strokeEnabled === true"), "a stroke can be switched on")
