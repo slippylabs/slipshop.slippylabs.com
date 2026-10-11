@@ -1,5 +1,11 @@
 # SlipShop
 
+> **Archived 2026-10-11.** SlipShop is no longer developed or hosted.
+> `slipshop.slippylabs.com` now redirects to PhotoCraft, an open-source image
+> editor by ArtCraft that took its place on the art hub and in SlipStudio's 2D
+> tab. The code stays here, read-only, as a record; the last release that ran
+> live is v1.1.3.
+
 An image editor that runs entirely in your browser. Layers with 27 blend modes,
 masks, clipping and nine layer effects; re-editable text with sixteen warp
 styles; bezier paths and shape layers; a liquify mesh; selections with real
